@@ -1,0 +1,31 @@
+{
+  "name": "local-code-opencode-plugin",
+  "version": "0.1.0-draft.0",
+  "description": "OpenCode plugin/command companion that injects local-code style git handoff context on model switches.",
+  "type": "module",
+  "bin": {
+    "lc-opencode-context": "bin/lc-opencode-context.js"
+  },
+  "exports": {
+    ".": "./src/plugin.js",
+    "./context": "./src/context.js",
+    "./handoff": "./src/handoff.js"
+  },
+  "scripts": {
+    "context": "node bin/lc-opencode-context.js",
+    "check": "node --check bin/lc-opencode-context.js && node --check src/context.js && node --check src/handoff.js && node --check src/plugin.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "local-code",
+    "git-context",
+    "model-switch"
+  ],
+  "author": "Shawn Lee",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
+}
