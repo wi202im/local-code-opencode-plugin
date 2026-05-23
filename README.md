@@ -103,5 +103,6 @@ npm run check
 
 ## 문서
 
+- `docs/IMPLEMENTATION_STATUS.md` — 현재 구현 범위, 구현율, 최종 목표, 로컬 테스트 가이드
 - `docs/ARCHITECTURE.md` — 최종 plugin 구조
 - `docs/SPIKES.md` — OpenCode plugin에서 검증할 항목
