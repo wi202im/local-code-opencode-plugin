@@ -33,7 +33,10 @@ export async function detectWorkspaceRepos(root) {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const full = path.join(root, entry.name);
-    if (await isGitRepo(full)) {
+    // Important: when root is a git repo, every child directory is technically
+    // "inside a work tree". For workspace detection we only want immediate
+    // child repos with their own .git entry.
+    if (await hasDotGit(full)) {
       childRepos.push({ name: entry.name, path: full });
     }
   }
@@ -52,15 +55,20 @@ export async function collectRepoState(repo, { logLimit = 10 } = {}) {
   return { repo, status, diffStat, log };
 }
 
-async function isGitRepo(dir) {
+async function hasDotGit(dir) {
   try {
     const dotGit = path.join(dir, ".git");
     const s = await stat(dotGit);
-    if (s.isDirectory() || s.isFile()) return true;
-  } catch {}
+    return s.isDirectory() || s.isFile();
+  } catch {
+    return false;
+  }
+}
 
-  const result = await git(dir, ["rev-parse", "--is-inside-work-tree"]);
-  return result.trim() === "true";
+async function isGitRepo(dir) {
+  if (await hasDotGit(dir)) return true;
+  const result = await git(dir, ["rev-parse", "--show-toplevel"]);
+  return path.resolve(result.trim()) === path.resolve(dir);
 }
 
 async function git(cwd, args) {
