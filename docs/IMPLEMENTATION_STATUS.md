@@ -8,7 +8,7 @@
 
 최종 목표인 **OpenCode TUI 내부 모델 전환 시점에 자동으로 git 기반 context를 주입하는 native plugin**은 아직 spike/검증 단계가 남아 있다.
 
-대략적인 전체 구현율은 **35~40%** 수준으로 본다.
+대략적인 전체 구현율은 **65~70%** 수준으로 본다.
 
 ## 최종 목표
 
@@ -48,7 +48,7 @@ plugin이 현재 repo/workspace 상태 수집
 
 ### 1. Git context core
 
-구현율: **70~80%**
+구현율: **80~90%**
 
 구현 파일:
 
@@ -69,6 +69,7 @@ plugin이 현재 repo/workspace 상태 수집
 - local-code 스타일 handoff prompt를 생성한다.
 - 이전 모델/다음 모델 정보를 prompt에 넣는다.
 - 사용자 승인 없이 위험한 외부 작업을 하지 말라는 문구를 포함한다.
+- turnLog sliding window 렌더링 (처음 3 + 최근 7)
 
 CLI 예시:
 
@@ -87,11 +88,13 @@ lc-opencode-context --cwd . --next-model anthropic/claude-sonnet-4-5
 
 ### 2. OpenCode custom command bridge
 
-구현율: **50~60%**
+구현율: **90~95%**
 
 구현 파일:
 
-- `templates/opencode/commands/lc-sonnet.md`
+- `templates/opencode/commands/lc-codex.md`
+- `templates/opencode/commands/lc-gpt55.md`
+- `templates/opencode/commands/lc-deepseek.md`
 - `templates/opencode/commands/lc-qwen.md`
 - `templates/opencode/commands/lc-kimi.md`
 - `templates/opencode/commands/lc-review.md`
@@ -114,8 +117,11 @@ cp templates/opencode/commands/*.md .opencode/commands/
 OpenCode TUI 예시:
 
 ```text
-/lc-sonnet 이어서 테스트까지 봐줘
-/lc-qwen 구조 빠르게 훑고 다음 작업 제안해줘
+/lc-deepseek 이어서 진행해줘
+/lc-codex 이거 구현해줘
+/lc-gpt55 복잡한 리팩토링 부탁해
+/lc-qwen 빠르게 구조만 훑어줘
+/lc-kimi 긴 로그 분석해줘
 /lc-review 현재 diff 리뷰해줘
 ```
 
@@ -124,111 +130,90 @@ OpenCode TUI 예시:
 - 이 방식은 native plugin이 아니라 command bridge다.
 - OpenCode의 custom command `model:` frontmatter와 shell output injection이 실제 사용 환경에서 기대대로 동작하는지 로컬 스모크 테스트가 필요하다.
 
-### 3. Native OpenCode plugin draft
+### 3. Native OpenCode plugin
 
-구현율: **15~25%**
+구현율: **60~70%**
 
 구현 파일:
 
-- `src/plugin.js`
+- `src/plugin.js` (npm package entry)
+- `.opencode/plugins/local-code-plugin.js` (local dev copy)
 
 현재 들어간 것:
 
-- OpenCode plugin export 형태 초안
-- event payload debug logging 후보
-- `/lc-model <profile>` command intercept 후보
-- `client.session.prompt({ noReply: true, parts: [...] })` 기반 context-only injection 후보
-- `client.config.update({ model })` 기반 모델 상태 변경 후보
-- TUI toast 표시 후보
+- OpenCode plugin export: `LocalCodeOpenCodePlugin` factory with `client`, `directory`, `project` params
+- Event hook 기반 session/model/agent 추적:
+  - `session.created` → sessionID 획득
+  - `session.next.model.switched` → native `/model` 전환 시 context 자동 주입
+  - `session.next.agent.switched` → agent 추적
+  - `command.executed` → `/lc-*` 커맨드 감지, profile 매칭, context 주입
+  - `message.updated` → user turn 생성, diff stats 캡처, turnLog 누적
+  - `session.idle` → turn 저장
+- `client.session.prompt({ noReply: true, parts: [...] })` 기반 context-only injection
+- TurnLog persistence: `.opencode/local-code/turns.json` 파일에 저장/로드 (최대 50개)
+- Sliding window 렌더링: 처음 3개 + 최근 7개 turn
+- Per-turn diff stats: `message.updated`의 `info.summary.diffs`에서 추출
 
 아직 확정되지 않은 것:
 
-- plugin hook 이름과 payload shape가 현재 OpenCode 버전에서 정확히 맞는지
-- `tui.command.execute`에서 현재 session id를 안정적으로 얻을 수 있는지
-- `client.session.prompt(... noReply: true ...)`가 실제 TUI session의 다음 turn 문맥에 반영되는지
-- `client.config.update({ model })`이 TUI의 현재 모델 표시/상태와 동기화되는지
-- native `/models` 선택 이벤트를 plugin이 감지할 수 있는지
+- TurnLog의 `request` 필드 (현재 user message text가 정확히 어디 있는지 spike 필요)
+- `.opencode/local-code.json` per-project config (profiles, options)
 
 ### 4. Model profile mapping
 
-구현율: **40~50%**
+구현율: **70~80%**
 
 구현 파일:
 
 - `src/profiles.js`
 
-현재 profile 초안:
+현재 profile:
 
-- `sonnet` → `anthropic/claude-sonnet-4-5`
-- `qwen` → `openrouter/qwen/qwen3-coder`
-- `kimi` → `openrouter/moonshotai/kimi-k2`
-- `review` → `openrouter/deepseek/deepseek-chat`
+- `codex` → `openai/gpt-5.3-codex` (primary coding)
+- `gpt55` → `openai/gpt-5.5-pro` (highest quality)
+- `deepseek` → `opencode-go/deepseek-v4-pro` (general)
+- `qwen` → `opencode-go/qwen3.6-plus` (cheap coding)
+- `kimi` → `opencode-go/kimi-k2.6` (long-context)
+- `review` → `opencode-go/deepseek-v4-pro` (plan agent)
 
 남은 것:
 
-- 사용자 환경의 실제 OpenCode provider/model id와 맞는지 확인
-- repo-local 설정 파일로 외부화할지 결정
-- `.opencode/local-code.json` 같은 config를 둘지 결정
+- repo-local 설정 파일로 외부화 (`.opencode/local-code.json`)
+- 사용자 커스텀 profile 지원
 
 ### 5. turnLog / 작업 단위 추적
 
-구현율: **10~20%**
+구현율: **60~70%**
 
 현재 상태:
 
-- `src/handoff.js`에는 turnLog를 받아 렌더링할 수 있는 구조가 있다.
-- 하지만 OpenCode event에서 turnLog를 실제로 수집하는 코드는 아직 없다.
+- `message.updated` (role=user) → model/agent 캡처, turn 생성
+- `info.summary.diffs` → per-turn diff stats 추출
+- `session.idle` → turn 저장
+- TurnLog shape: `{ model, agent, diffStats, createdAt }`
+- Persistence: `.opencode/local-code/turns.json` (최대 50개)
+- Sliding window: 처음 3 + 최근 7개 (handoff.js)
 
-최종 목표:
+남은 것:
 
-- user message 시작 전 git snapshot 저장
-- session idle 이후 diff stat 수집
-- 각 turn을 다음 형태로 저장
+- `request` 필드 (user message text) 캡처
+- 도구 호출 전후 diff stats 정확도 개선
 
-```js
-{
-  request,
-  model,
-  agent,
-  diffStats,
-  createdAt
-}
-```
+## 아직 해야 할 항목
 
-- 긴 turnLog는 local-code 원칙대로 처음 3개 + 최근 7개 sliding window로 렌더링
-- durable transcript/state file을 만들지 않고 session-local bounded cache로만 유지
+상세 spike 항목은 `docs/SPIKES.md`에 있다.
 
-## 아직 해야 할 핵심 spike
+우선순위 높은 항목:
 
-상세 항목은 `docs/SPIKES.md`에 있다.
+1. **TurnLog `request` 필드 캡처**
+   - `message.updated` 이벤트에서 user message text 추출
 
-우선순위 높은 검증:
+2. **Per-project config**
+   - `.opencode/local-code.json` 으로 profiles, options 외부화
 
-1. **custom command MVP 스모크 테스트**
-   - `.opencode/commands`에 템플릿 복사
-   - OpenCode TUI에서 `/lc-sonnet`, `/lc-qwen`, `/lc-review` 실행
-   - `model:` frontmatter가 실제로 해당 command turn의 모델을 바꾸는지 확인
-   - shell injection으로 `lc-opencode-context` 출력이 prompt에 들어가는지 확인
-
-2. **plugin event payload map 확보**
-   - `LOCAL_CODE_OPENCODE_DEBUG=1 opencode`로 실행
-   - 일반 메시지, session idle, `/models`, custom command 실행 시 event payload keys 기록
-   - 현재 session id 위치 확인
-
-3. **noReply injection 검증**
-   - plugin 또는 OpenCode client에서 `noReply:true` message를 넣는다.
-   - 다음 TUI 질문에서 주입한 marker를 모델이 기억하는지 확인한다.
-
-4. **모델 전환 방법 확정**
-   - `client.config.update({ model })`
-   - `client.session.prompt({ model, parts })`
-   - custom command `model:` frontmatter
-   - native `/models` event hook
-
-5. **turnLog 수집 타이밍 확정**
-   - user message before snapshot
-   - session idle after snapshot
-   - diff stat 계산
+3. **테스트 커버리지 확장**
+   - plugin 이벤트 핸들러 단위 테스트
+   - handoff 렌더링 테스트
 
 ## 로컬 테스트 가이드
 
@@ -256,7 +241,7 @@ npm run check # syntax check passing
 ### 3. CLI context 출력 확인
 
 ```bash
-node bin/lc-opencode-context.js --cwd . --next-model anthropic/claude-sonnet-4-5
+node bin/lc-opencode-context.js --cwd . --next-model opencode-go/deepseek-v4-pro
 ```
 
 출력에 다음이 포함되어야 한다.
@@ -294,7 +279,7 @@ opencode
 TUI 안에서:
 
 ```text
-/lc-sonnet 현재 상태 이어서 설명해줘
+/lc-deepseek 현재 상태 이어서 설명해줘
 /lc-qwen 현재 diff 기준으로 다음 구현 계획 세워줘
 /lc-review 현재 변경사항 리뷰해줘
 ```
@@ -308,29 +293,25 @@ TUI 안에서:
 
 ## 구현율 요약
 
-- Git context core: **70~80%**
-- CLI handoff generator: **70~80%**
-- OpenCode custom command bridge: **50~60%**
-- Native OpenCode plugin: **15~25%**
-- turnLog/session integration: **10~20%**
-- 전체 최종 목표 기준: **35~40%**
+- Git context core: **80~90%**
+- CLI handoff generator: **80~90%**
+- OpenCode custom command bridge: **90~95%**
+- Native OpenCode plugin: **60~70%**
+- Model profiles: **70~80%**
+- turnLog: **60~70%**
+- 전체 최종 목표 기준: **65~70%**
 
 ## 다음 개발 순서 제안
 
-1. custom command MVP를 실제 OpenCode TUI에서 먼저 검증한다.
-2. command bridge가 동작하면 README에 실사용 절차를 확정한다.
-3. plugin debug logging으로 event payload map을 확보한다.
-4. session id 획득과 noReply injection을 검증한다.
-5. `/lc-model <profile>` native command를 구현한다.
-6. 가능하면 native `/models` 선택 이벤트 후 자동 context injection을 붙인다.
-7. turnLog 수집/렌더링을 추가한다.
-8. 모델 profile 설정을 repo-local config로 외부화한다.
+1. TurnLog `request` 필드 캡처 (user message text)
+2. `.opencode/local-code.json` per-project config 지원
+3. Plugin 이벤트 핸들러 유닛 테스트
+4. 턴 간 git diff 정확도 개선 (도구 호출 전후 비교)
 
 ## 현재 결론
 
-지금 저장소는 **로컬 컴퓨터에서 받아서 custom command MVP를 테스트해볼 가치가 있는 상태**다.
+지금 저장소는 **OpenCode TUI 안에서 event hook 기반으로 git handoff context를 자동 주입하는 native plugin**이 어느 정도 동작하는 상태다.
 
-다만 아직 최종 plugin 완성본은 아니며, 가장 먼저 확인해야 할 것은 다음 두 가지다.
+Event payload shapes는 OpenCode 1.15.10 기준으로 검증되었고, `session.next.model.switched` 기반 context injection과 turnLog persistence가 구현되어 있다.
 
-1. OpenCode custom command의 `model:` frontmatter가 실제 모델 전환에 충분한지
-2. shell injection으로 생성한 local-code handoff context가 OpenCode prompt에 안정적으로 포함되는지
+남은 주요 작업은 turnLog request 텍스트 캡처와 per-project config 지원이다.

@@ -1,8 +1,8 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
-import { buildContextPayload } from "./context.js";
-import { renderModelHandoffPrompt } from "./handoff.js";
-import { DEFAULT_PROFILES, resolveProfile, splitModelID } from "./profiles.js";
+import { buildContextPayload } from "../../src/context.js";
+import { renderModelHandoffPrompt } from "../../src/handoff.js";
+import { DEFAULT_PROFILES, resolveProfile } from "../../src/profiles.js";
 
 const TURNS_FILE = ".opencode/local-code/turns.json";
 const TURN_LOG_MAX = 50;
@@ -29,13 +29,6 @@ async function saveTurns(root, turns) {
   }
 }
 
-function modelStr(modelObj, fallback = "unknown") {
-  if (!modelObj) return fallback;
-  const pid = modelObj.providerID || "";
-  const mid = modelObj.modelID || modelObj.id || "";
-  return pid && mid ? `${pid}/${mid}` : fallback;
-}
-
 function extractDiffStats(summaryDiffs) {
   if (!Array.isArray(summaryDiffs) || !summaryDiffs.length) return [];
   const seen = new Set();
@@ -52,13 +45,20 @@ function extractDiffStats(summaryDiffs) {
 
 export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) => {
   const root = directory ?? project?.path ?? process.cwd();
+
+  let turns = await loadTurns(root);
   let sessionID = null;
   let currentModel = "unknown";
   let currentAgent = "build";
 
-  let turns = await loadTurns(root);
-
   log("loaded", turns.length, "previous turns");
+
+  function modelStr(modelObj, fallback = "unknown") {
+    if (!modelObj) return fallback;
+    const pid = modelObj.providerID || "";
+    const mid = modelObj.modelID || modelObj.id || "";
+    return pid && mid ? `${pid}/${mid}` : fallback;
+  }
 
   async function injectContext(nextModel) {
     if (!sessionID) {
@@ -170,4 +170,3 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
 };
 
 export default LocalCodeOpenCodePlugin;
-export { splitModelID };
