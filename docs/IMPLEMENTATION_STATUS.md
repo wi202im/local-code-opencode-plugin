@@ -6,7 +6,7 @@
 
 현재 저장소는 **OpenCode TUI 내부에서 native `/model` 전환 시 event hook으로 자동 git handoff context를 주입하는 native plugin**이 동작하는 상태다.
 
-대략적인 전체 구현율은 **70~75%** 수준으로 본다.
+대략적인 전체 구현율은 **75~80%** 수준으로 본다.
 
 ## 최종 목표
 
@@ -83,7 +83,7 @@ lc-opencode-context --cwd . --next-model anthropic/claude-sonnet-4-5
 
 ### 2. Native OpenCode plugin
 
-구현율: **70~80%**
+구현율: **80~85%**
 
 구현 파일:
 
@@ -103,6 +103,8 @@ lc-opencode-context --cwd . --next-model anthropic/claude-sonnet-4-5
 - TurnLog persistence: `.opencode/local-code/turns.json` 파일에 저장/로드 (최대 50개)
 - Sliding window 렌더링: 처음 3개 + 최근 7개 turn
 - Per-turn diff stats: `message.updated`의 `info.summary.diffs`에서 추출
+- 방어 로직: repo 미발견 또는 모든 repo clean 상태 시 injection 스킵
+- Workspace detection: root가 git repo 아닐 때 단일 child repo도 인식
 
 아직 확정되지 않은 것:
 
@@ -217,10 +219,10 @@ node bin/lc-opencode-context.js --cwd . --next-model opencode-go/deepseek-v4-pro
 
 - Git context core: **80~90%**
 - CLI handoff generator: **80~90%**
-- Native OpenCode plugin: **70~80%**
+- Native OpenCode plugin: **80~85%**
 - Model profiles: **70~80%**
 - turnLog: **60~70%**
-- 전체 최종 목표 기준: **70~75%**
+- 전체 최종 목표 기준: **75~80%**
 
 ## 다음 개발 순서 제안
 

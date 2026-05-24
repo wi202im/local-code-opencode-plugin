@@ -22,16 +22,18 @@ OpenCode TUI
 - `lc-opencode-context` CLI
   - workspace/단일 repo 자동 감지
   - immediate child git repo가 2개 이상이면 multi-repo workspace로 처리
+  - root가 git repo 아닐 때 단일 child repo도 인식
   - repo별 `git status --short`, `git diff --stat`, `git log -10 --oneline` 수집
   - handoff prompt 출력
 - OpenCode native plugin (`src/plugin.js`)
   - `session.created` → sessionID 획득
-  - `session.next.model.switched` → native `/model` 전환 시 자동 context 주입
+  - `session.next.model.switched` → native `/model` 전환 시 context 자동 주입
   - `session.next.agent.switched` → agent 추적
   - `message.updated` → user turn 생성, diff stats 캡처, turnLog 누적
   - `session.idle` → turn 저장
   - TurnLog persistence: `.opencode/local-code/turns.json` (최대 50개)
   - Sliding window 렌더링: 처음 3 + 최근 7개 turn
+  - 방어 로직: repo 미발견 또는 변경사항 없을 시 injection 스킵
 
 아직 작업 필요:
 
