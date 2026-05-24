@@ -5,6 +5,7 @@ import path from "node:path";
 const execFileAsync = execFileSync;
 const TURNS_FILE = ".opencode/local-code/turns.json";
 const TURN_LOG_MAX = 50;
+const HANDOFF_PREFIX = "[Local-code model handoff]";
 const DEFAULT_HEAD_KEEP = 3;
 const DEFAULT_TAIL_KEEP = 7;
 
@@ -120,15 +121,23 @@ function indentBlock(text, prefix) { return String(text).split("\n").map((line) 
 // ── plugin ──
 
 function loadTurns(root) {
-  try { const raw = readFileSync(path.join(root, TURNS_FILE), "utf-8"); const p = JSON.parse(raw); if (Array.isArray(p)) return p.slice(-TURN_LOG_MAX); } catch {}
+  try { const raw = readFileSync(path.join(root, TURNS_FILE), "utf-8"); const p = JSON.parse(raw); if (Array.isArray(p)) return sanitizeTurns(p); } catch {}
   return [];
 }
 
 function saveTurns(root, turns) {
   try {
     mkdirSync(path.join(root, ".opencode/local-code"), { recursive: true });
-    writeFileSync(path.join(root, TURNS_FILE), JSON.stringify(turns.slice(-TURN_LOG_MAX), null, 2));
+    writeFileSync(path.join(root, TURNS_FILE), JSON.stringify(sanitizeTurns(turns), null, 2));
   } catch (err) { log("failed to save turns:", err?.message); }
+}
+
+function isLocalCodeHandoffText(text) {
+  return typeof text === "string" && text.trimStart().startsWith(HANDOFF_PREFIX);
+}
+
+function sanitizeTurns(turns) {
+  return turns.filter((turn) => !isLocalCodeHandoffText(turn?.request)).slice(-TURN_LOG_MAX);
 }
 
 function extractDiffStats(summaryDiffs) {
@@ -229,6 +238,13 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
         if (part.type === "text" && part.messageID) {
           partBuffer.set(part.messageID, part.text);
           if (pendingMessageID === part.messageID && turns.length > 0) {
+            if (isLocalCodeHandoffText(part.text)) {
+              turns.pop();
+              pendingMessageID = null;
+              saveTurns(root, turns);
+              log("ignored injected handoff turn");
+              return;
+            }
             turns[turns.length - 1].request = part.text;
             saveTurns(root, turns);
           }
@@ -242,13 +258,20 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
         const role = info.role ?? "";
 
         if (role === "user") {
+          const request = partBuffer.get(info.id);
+          if (isLocalCodeHandoffText(request)) {
+            pendingMessageID = null;
+            saveTurns(root, turns);
+            log("ignored injected handoff turn");
+            return;
+          }
           if (info.model) currentModel = modelStr(info.model, currentModel);
           if (info.agent) currentAgent = info.agent;
           if (info.summary?.diffs && turns.length > 0) {
             const last = turns[turns.length - 1];
             if (!last.diffStats.length) last.diffStats = extractDiffStats(info.summary.diffs);
           }
-          turns.push({ model: currentModel, agent: currentAgent, request: partBuffer.get(info.id), diffStats: [], createdAt: new Date().toISOString() });
+          turns.push({ model: currentModel, agent: currentAgent, request, diffStats: [], createdAt: new Date().toISOString() });
           pendingMessageID = info.id;
           if (turns.length > TURN_LOG_MAX) turns.splice(0, turns.length - TURN_LOG_MAX);
           saveTurns(root, turns);
