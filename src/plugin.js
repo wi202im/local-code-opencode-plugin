@@ -95,86 +95,78 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
   }
 
   return {
-    "session.created": (input) => {
-      const id = input?.properties?.info?.id;
-      if (id) { sessionID = id; log("session created:", id); }
-    },
+    event: async ({ event }) => {
+      const { type, properties } = event ?? {};
+      if (!type) return;
 
-    "session.updated": async (input) => {
-      const model = input?.properties?.info?.model;
-      if (!model) return;
-      const nextModel = modelStr(model);
-      if (!seenInitialModel) { currentModel = nextModel; seenInitialModel = true; return; }
-      if (nextModel === currentModel) return;
-      log("model switch detected:", currentModel, "→", nextModel);
-      await injectContext(nextModel);
-    },
-
-    "session.next.agent.switched": (input) => {
-      const agent = input?.properties?.agent;
-      if (agent) { currentAgent = agent; log("agent:", agent); }
-    },
-
-    "message.part.updated": (input) => {
-      const part = input?.properties?.part;
-      if (!part) return;
-      if (part.type === "text" && part.messageID) {
-        partBuffer.set(part.messageID, part.text);
-        if (pendingMessageID === part.messageID && turns.length > 0) {
-          turns[turns.length - 1].request = part.text;
-          saveTurns(root, turns).catch(() => {});
-        }
+      if (type === "session.created") {
+        const id = properties?.info?.id;
+        if (id) { sessionID = id; log("session created:", id); }
       }
-    },
 
-    "message.updated": async (input) => {
-      const props = input?.properties;
-      if (!props) return;
-      const info = props.info;
-      if (!info) return;
-      if (props.sessionID) sessionID = props.sessionID;
+      if (type === "session.next.model.switched") {
+        const model = properties?.model;
+        if (!model) return;
+        const nextModel = modelStr(model);
+        log("model switched event:", currentModel, "→", nextModel);
+        await injectContext(nextModel);
+      }
 
-      const role = info.role ?? "";
+      if (type === "session.updated") {
+        const model = properties?.info?.model;
+        if (!model) return;
+        const nextModel = modelStr(model);
+        if (!seenInitialModel) { currentModel = nextModel; seenInitialModel = true; return; }
+        if (nextModel === currentModel) return;
+        log("model switch detected:", currentModel, "→", nextModel);
+        await injectContext(nextModel);
+      }
 
-      if (role === "user") {
-        if (info.model) currentModel = modelStr(info.model, currentModel);
-        if (info.agent) currentAgent = info.agent;
+      if (type === "session.next.agent.switched") {
+        const agent = properties?.agent;
+        if (agent) { currentAgent = agent; log("agent:", agent); }
+      }
 
-        if (info.summary?.diffs && turns.length > 0) {
-          const last = turns[turns.length - 1];
-          if (!last.diffStats.length) {
-            last.diffStats = extractDiffStats(info.summary.diffs);
+      if (type === "message.part.updated") {
+        const part = properties?.part;
+        if (!part) return;
+        if (part.type === "text" && part.messageID) {
+          partBuffer.set(part.messageID, part.text);
+          if (pendingMessageID === part.messageID && turns.length > 0) {
+            turns[turns.length - 1].request = part.text;
+            saveTurns(root, turns).catch(() => {});
           }
         }
+      }
 
-        turns.push({
-          model: currentModel,
-          agent: currentAgent,
-          request: partBuffer.get(info.id),
-          diffStats: [],
-          createdAt: new Date().toISOString(),
-        });
-        pendingMessageID = info.id;
+      if (type === "message.updated") {
+        if (properties?.sessionID) sessionID = properties.sessionID;
+        const info = properties?.info;
+        if (!info) return;
+        const role = info.role ?? "";
 
-        if (turns.length > TURN_LOG_MAX) {
-          turns.splice(0, turns.length - TURN_LOG_MAX);
+        if (role === "user") {
+          if (info.model) currentModel = modelStr(info.model, currentModel);
+          if (info.agent) currentAgent = info.agent;
+          if (info.summary?.diffs && turns.length > 0) {
+            const last = turns[turns.length - 1];
+            if (!last.diffStats.length) last.diffStats = extractDiffStats(info.summary.diffs);
+          }
+          turns.push({ model: currentModel, agent: currentAgent, request: partBuffer.get(info.id), diffStats: [], createdAt: new Date().toISOString() });
+          pendingMessageID = info.id;
+          if (turns.length > TURN_LOG_MAX) turns.splice(0, turns.length - TURN_LOG_MAX);
+          await saveTurns(root, turns);
+          log("turn #" + turns.length, "model:", currentModel);
         }
 
-        await saveTurns(root, turns);
-        log("turn #" + turns.length, "model:", currentModel);
+        if (role === "assistant" && info.modelID && info.providerID) {
+          currentModel = `${info.providerID}/${info.modelID}`;
+        }
       }
 
-      if (role === "assistant" && info.modelID && info.providerID) {
-        currentModel = `${info.providerID}/${info.modelID}`;
-      }
-    },
-
-    "session.idle": async (input) => {
-      if (input?.properties?.sessionID) sessionID = input.properties.sessionID;
-
-      if (turns.length > 0) {
-        await saveTurns(root, turns);
-        log("session idle, turns saved:", turns.length);
+      if (type === "session.idle") {
+        if (properties?.sessionID) sessionID = properties.sessionID;
+        if (turns.length > 0) { await saveTurns(root, turns); log("session idle, turns saved:", turns.length); }
       }
     },
   };
