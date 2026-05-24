@@ -60,6 +60,7 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
   let pendingMessageID = null;
   const partBuffer = new Map();
   let seenInitialModel = false;
+  let switching = false;
 
   log("loaded", turns.length, "previous turns");
 
@@ -68,30 +69,36 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
       log("no sessionID, skipping context injection");
       return;
     }
-    const payload = await buildContextPayload({ cwd: root, previousModel: currentModel, nextModel });
-
-    const hasRelevantChanges = payload.repoStates.some(
-      (s) => s.status || s.diffStat
-    );
-    if (!payload.repos.length || !hasRelevantChanges) {
-      if (!payload.repos.length) log("no repos found, skipping injection");
-      else log("no changes detected, skipping injection");
-      currentModel = nextModel;
-      return;
-    }
-
-    if (turns.length) payload.turnLog = turns;
-    const text = renderModelHandoffPrompt(payload);
+    if (switching) { log("already switching, skip"); return; }
+    switching = true;
     try {
-      await client.session.prompt({
-        path: { id: sessionID },
-        body: { noReply: true, parts: [{ type: "text", text }] },
-      });
-      log("context injected, turns:", turns.length, "model:", nextModel);
-    } catch (err) {
-      log("context injection failed:", err?.message);
+      const payload = await buildContextPayload({ cwd: root, previousModel: currentModel, nextModel });
+
+      const hasRelevantChanges = payload.repoStates.some(
+        (s) => s.status || s.diffStat
+      );
+      if (!payload.repos.length || !hasRelevantChanges) {
+        if (!payload.repos.length) log("no repos found, skipping injection");
+        else log("no changes detected, skipping injection");
+        currentModel = nextModel;
+        return;
+      }
+
+      if (turns.length) payload.turnLog = turns;
+      const text = renderModelHandoffPrompt(payload);
+      try {
+        await client.session.prompt({
+          path: { id: sessionID },
+          body: { noReply: true, parts: [{ type: "text", text }] },
+        });
+        log("context injected, turns:", turns.length, "model:", nextModel);
+      } catch (err) {
+        log("context injection failed:", err?.message);
+      }
+      currentModel = nextModel;
+    } finally {
+      switching = false;
     }
-    currentModel = nextModel;
   }
 
   return {
@@ -108,7 +115,7 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
         const model = properties?.model;
         if (!model) return;
         const nextModel = modelStr(model);
-        log("model switched event:", currentModel, "→", nextModel);
+        log("model switched:", currentModel, "→", nextModel);
         await injectContext(nextModel);
       }
 
@@ -117,9 +124,10 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
         if (!model) return;
         const nextModel = modelStr(model);
         if (!seenInitialModel) { currentModel = nextModel; seenInitialModel = true; return; }
-        if (nextModel === currentModel) return;
-        log("model switch detected:", currentModel, "→", nextModel);
-        await injectContext(nextModel);
+        if (nextModel !== currentModel) {
+          log("model change in session.updated:", currentModel, "→", nextModel);
+          await injectContext(nextModel);
+        }
       }
 
       if (type === "session.next.agent.switched") {

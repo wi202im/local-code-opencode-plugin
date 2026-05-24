@@ -1,4 +1,4 @@
-# local-code-opencode-plugin v.1.0
+# local-code-opencode-plugin v.1.0.0
 
 OpenCode TUI 안에서 모델을 바꿀 때, 기존 `local-code`의 핵심 아이디어인 **git 상태 기반 handoff context**를 새 모델 문맥으로 주입하는 플러그인이다.
 
