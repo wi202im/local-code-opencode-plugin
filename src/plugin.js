@@ -59,6 +59,7 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
   let turns = await loadTurns(root);
   let pendingMessageID = null;
   const partBuffer = new Map();
+  let seenInitialModel = false;
 
   log("loaded", turns.length, "previous turns");
 
@@ -99,11 +100,13 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
       if (id) { sessionID = id; log("session created:", id); }
     },
 
-    "session.next.model.switched": async (input) => {
-      const model = input?.properties?.model;
+    "session.updated": async (input) => {
+      const model = input?.properties?.info?.model;
       if (!model) return;
       const nextModel = modelStr(model);
-      log("native model switch:", nextModel);
+      if (!seenInitialModel) { currentModel = nextModel; seenInitialModel = true; return; }
+      if (nextModel === currentModel) return;
+      log("model switch detected:", currentModel, "→", nextModel);
       await injectContext(nextModel);
     },
 
