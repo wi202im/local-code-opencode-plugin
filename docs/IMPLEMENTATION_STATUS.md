@@ -52,6 +52,9 @@ plugin이 현재 repo/workspace 상태 수집
 - `src/handoff.js`
 - `bin/lc-opencode-context.js`
 - `test/context.test.js`
+- `test/handoff.test.js`
+- `test/plugin.test.js`
+- `test/profiles.test.js`
 
 현재 가능한 것:
 
@@ -140,9 +143,10 @@ lc-opencode-context --cwd . --next-model anthropic/claude-sonnet-4-5
 
 우선순위 높은 항목:
 
-1. **테스트 커버리지 확장**
-   - plugin 이벤트 핸들러 단위 테스트
-   - handoff 렌더링 테스트
+1. **실제 OpenCode 장시간 smoke test**
+   - 여러 turn 작업 후 `/models` picker 전환
+   - 직접 `/model provider/model` fallback 확인
+   - staged/untracked/multi-repo handoff 내용 확인
 
 2. **per-project config 지원**
    - `.opencode/local-code.json`
@@ -167,7 +171,7 @@ npm run check
 현재 기준 기대 결과:
 
 ```text
-npm test      # 19 tests passing
+npm test      # 20 tests passing
 npm run check # syntax check passing
 ```
 
@@ -207,8 +211,8 @@ node bin/lc-opencode-context.js --cwd . --next-model opencode-go/deepseek-v4-pro
 
 ## 다음 개발 순서 제안
 
-1. Plugin 이벤트 핸들러 테스트를 native `/models` picker, injected handoff filtering, multi-repo snapshot까지 확장
-2. `.opencode/local-code.json` per-project config 지원
+1. 실제 OpenCode 장시간 smoke test로 TUI 동작 검증
+2. Plugin 이벤트 테스트를 injected handoff filtering, native `/models` picker 세부 payload까지 추가 확장
 3. OpenCode upstream에서 직접 모델 command 이벤트가 생길 경우 native integration으로 전환
 
 ## 현재 결론
@@ -217,4 +221,4 @@ node bin/lc-opencode-context.js --cwd . --next-model opencode-go/deepseek-v4-pro
 
 Event payload shapes는 OpenCode 1.15.10 기준으로 검증되었고, `session.next.model.switched` 기반 context injection, 직접 `/model provider/model` text fallback, turnLog persistence/filtering, turn 시작/종료 git diff snapshot 비교가 구현되어 있다.
 
-남은 주요 작업은 이벤트 테스트 구조 확장, per-project config 지원, OpenCode upstream에서 직접 모델 command 이벤트가 생길 경우의 native integration 검토다.
+남은 주요 작업은 실제 OpenCode 장시간 smoke test, 추가 이벤트 edge-case 테스트, OpenCode upstream에서 직접 모델 command 이벤트가 생길 경우의 native integration 검토다.

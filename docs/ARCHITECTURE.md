@@ -39,6 +39,14 @@ New model continues using git status/diff/log as source of truth
 - `src/profiles.js`
   - splitModelID utility
 
+## Tests
+
+- `test/context.test.js` covers repo/workspace detection and git diff snapshots.
+- `test/handoff.test.js` covers prompt rendering and turnLog windows.
+- `test/plugin.test.js` covers OpenCode event flows and turnLog persistence.
+- `test/profiles.test.js` covers model id parsing.
+- `test-support/helpers.js` holds shared git/temp-repo test helpers.
+
 ## Why event-driven plugin
 
 The plugin hooks `session.next.model.switched` to automatically inject git-based handoff context whenever the user switches models via the native `/models` picker. This is the canonical path because OpenCode emits a real model switch event.

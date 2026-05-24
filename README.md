@@ -44,7 +44,7 @@ OpenCode TUI
 아직 작업 필요:
 
 - `.opencode/local-code.json` 같은 per-project config 지원
-- plugin 이벤트 핸들러 테스트 구조 분리/확장
+- 실제 OpenCode 장시간 smoke test
 
 ## 사용법
 
@@ -89,6 +89,8 @@ lc-opencode-context --cwd . --previous-model openai/gpt-5.3-codex --next-model o
 npm test
 npm run check
 ```
+
+테스트는 `test/context.test.js`, `test/handoff.test.js`, `test/plugin.test.js`, `test/profiles.test.js`로 나뉘어 있다.
 
 ## 문서
 
