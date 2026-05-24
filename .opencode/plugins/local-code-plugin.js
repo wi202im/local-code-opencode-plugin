@@ -191,9 +191,10 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
 
     "session.updated": async (input) => {
       const model = input?.properties?.info?.model;
+      log("session.updated, model:", model ? `${model.providerID || ""}/${model.id || model.modelID || "?"}` : "null", "current:", currentModel);
       if (!model) return;
       const nextModel = modelStr(model);
-      if (!seenInitialModel) { currentModel = nextModel; seenInitialModel = true; return; }
+      if (!seenInitialModel) { currentModel = nextModel; seenInitialModel = true; log("initial model:", nextModel); return; }
       if (nextModel === currentModel) return;
       log("model switch detected:", currentModel, "→", nextModel);
       await injectContext(nextModel);
