@@ -6,6 +6,7 @@ const execFileAsync = execFileSync;
 const TURNS_FILE = ".opencode/local-code/turns.json";
 const TURN_LOG_MAX = 50;
 const HANDOFF_PREFIX = "[Local-code model handoff]";
+const DIRECT_MODEL_RE = /^\/model\s+([^\s/]+\/[^\s]+)\s*$/;
 const DEFAULT_HEAD_KEEP = 3;
 const DEFAULT_TAIL_KEEP = 7;
 
@@ -140,6 +141,12 @@ function sanitizeTurns(turns) {
   return turns.filter((turn) => !isLocalCodeHandoffText(turn?.request)).slice(-TURN_LOG_MAX);
 }
 
+function parseDirectModelCommand(text) {
+  if (typeof text !== "string") return null;
+  const match = text.trim().match(DIRECT_MODEL_RE);
+  return match?.[1] ?? null;
+}
+
 function extractDiffStats(summaryDiffs) {
   if (!Array.isArray(summaryDiffs) || !summaryDiffs.length) return [];
   const seen = new Set(); const stats = [];
@@ -159,6 +166,8 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
   let turns = loadTurns(root);
   let pendingMessageID = null;
   const partBuffer = new Map();
+  const handledDirectModelMessages = new Set();
+  let directModelOverride = null;
   let seenInitialModel = false;
   let switching = false;
 
@@ -198,6 +207,29 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
     }
   }
 
+  async function handleDirectModelCommand(messageID, text) {
+    const nextModel = parseDirectModelCommand(text);
+    if (!nextModel || handledDirectModelMessages.has(messageID)) return false;
+    handledDirectModelMessages.add(messageID);
+
+    if (pendingMessageID === messageID && turns.length > 0) {
+      turns.pop();
+      pendingMessageID = null;
+      saveTurns(root, turns);
+    }
+
+    log("direct /model command:", currentModel, "→", nextModel);
+    directModelOverride = nextModel;
+    await injectContext(nextModel);
+    if (pendingMessageID === messageID && turns.length > 0) {
+      turns.pop();
+      pendingMessageID = null;
+      saveTurns(root, turns);
+      log("ignored direct /model turn");
+    }
+    return true;
+  }
+
   return {
     event: async ({ event }) => {
       const { type, properties } = event ?? {};
@@ -212,6 +244,11 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
         const model = properties?.model;
         if (!model) return;
         const nextModel = modelStr(model);
+        if (directModelOverride && nextModel !== directModelOverride) {
+          log("ignored stale model switch:", nextModel, "while direct target is", directModelOverride);
+          return;
+        }
+        if (directModelOverride === nextModel) directModelOverride = null;
         log("model switched:", currentModel, "→", nextModel);
         await injectContext(nextModel);
       }
@@ -221,6 +258,11 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
         if (!model) return;
         const nextModel = modelStr(model);
         if (!seenInitialModel) { currentModel = nextModel; seenInitialModel = true; return; }
+        if (directModelOverride && nextModel !== directModelOverride) {
+          log("ignored stale session model:", nextModel, "while direct target is", directModelOverride);
+          return;
+        }
+        if (directModelOverride === nextModel) directModelOverride = null;
         if (nextModel !== currentModel) {
           log("model change in session.updated:", currentModel, "→", nextModel);
           await injectContext(nextModel);
@@ -237,6 +279,7 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
         if (!part) return;
         if (part.type === "text" && part.messageID) {
           partBuffer.set(part.messageID, part.text);
+          if (await handleDirectModelCommand(part.messageID, part.text)) return;
           if (pendingMessageID === part.messageID && turns.length > 0) {
             if (isLocalCodeHandoffText(part.text)) {
               turns.pop();
@@ -259,11 +302,22 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
 
         if (role === "user") {
           const request = partBuffer.get(info.id);
+          if (handledDirectModelMessages.has(info.id)) {
+            pendingMessageID = null;
+            saveTurns(root, turns);
+            log("ignored direct /model turn");
+            return;
+          }
+          if (await handleDirectModelCommand(info.id, request)) return;
           if (isLocalCodeHandoffText(request)) {
             pendingMessageID = null;
             saveTurns(root, turns);
             log("ignored injected handoff turn");
             return;
+          }
+          if (directModelOverride) {
+            log("cleared direct model override before normal turn:", directModelOverride);
+            directModelOverride = null;
           }
           if (info.model) currentModel = modelStr(info.model, currentModel);
           if (info.agent) currentAgent = info.agent;
@@ -279,7 +333,13 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
         }
 
         if (role === "assistant" && info.modelID && info.providerID) {
-          currentModel = `${info.providerID}/${info.modelID}`;
+          const assistantModel = `${info.providerID}/${info.modelID}`;
+          if (directModelOverride && assistantModel !== directModelOverride) {
+            log("ignored stale assistant model:", assistantModel, "while direct target is", directModelOverride);
+            return;
+          }
+          currentModel = assistantModel;
+          if (directModelOverride === assistantModel) directModelOverride = null;
         }
       }
 
