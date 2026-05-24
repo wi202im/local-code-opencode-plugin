@@ -43,6 +43,7 @@ export async function detectWorkspaceRepos(root) {
 
   if (childRepos.length >= 2) return childRepos.sort((a, b) => a.name.localeCompare(b.name));
   if (await isGitRepo(root)) return [{ name: path.basename(root) || ".", path: root }];
+  if (childRepos.length === 1) return childRepos;
   return [];
 }
 

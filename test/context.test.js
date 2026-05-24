@@ -39,6 +39,16 @@ test("workspace mode prefers two immediate child git repos", async () => {
   assert.deepEqual(repos.map((repo) => repo.name), ["api", "web"]);
 });
 
+test("detects single child repo when root is not a git repo", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "lc-opencode-nongit-"));
+  const dir = path.join(root, "myproj");
+  await mkdir(dir);
+  git(dir, ["init"]);
+  const repos = await detectWorkspaceRepos(root);
+  assert.equal(repos.length, 1);
+  assert.equal(repos[0].name, "myproj");
+});
+
 test("does not treat normal child directories of a repo as workspace repos", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "lc-opencode-root-"));
   git(root, ["init"]);
