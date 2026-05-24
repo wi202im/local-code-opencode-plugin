@@ -1,9 +1,8 @@
-import { execFile } from "node:child_process";
-import { readdir, stat, readFile, writeFile, mkdir } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { readdirSync, statSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
 
-const execFileAsync = promisify(execFile);
+const execFileAsync = execFileSync;
 const TURNS_FILE = ".opencode/local-code/turns.json";
 const TURN_LOG_MAX = 50;
 const DEFAULT_HEAD_KEEP = 3;
@@ -12,51 +11,51 @@ const DEFAULT_TAIL_KEEP = 7;
 const DEBUG = process.env.LOCAL_CODE_OPENCODE_DEBUG === "1";
 const log = (...args) => DEBUG && console.error("[lc-plugin]", ...args);
 
-// ── context ──
+// ── context (sync) ──
 
-async function buildContextPayload({ cwd = process.cwd(), previousModel = "unknown", nextModel = "unknown", logLimit = 10 } = {}) {
+function buildContextPayload({ cwd = process.cwd(), previousModel = "unknown", nextModel = "unknown", logLimit = 10 } = {}) {
   const workspaceRoot = path.resolve(cwd);
-  const repos = await detectWorkspaceRepos(workspaceRoot);
-  const repoStates = await Promise.all(repos.map((repo) => collectRepoState(repo, { logLimit })));
+  const repos = detectWorkspaceRepos(workspaceRoot);
+  const repoStates = repos.map((repo) => collectRepoState(repo, { logLimit }));
   return { kind: "local-code-opencode-model-handoff", generatedAt: new Date().toISOString(), workspaceRoot, previousModel, nextModel, repos, repoStates, turnLog: [] };
 }
 
-async function detectWorkspaceRepos(root) {
+function detectWorkspaceRepos(root) {
   const childRepos = [];
   let entries = [];
-  try { entries = await readdir(root, { withFileTypes: true }); } catch { return []; }
+  try { entries = readdirSync(root, { withFileTypes: true }); } catch { return []; }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const full = path.join(root, entry.name);
-    if (await hasDotGit(full)) childRepos.push({ name: entry.name, path: full });
+    if (hasDotGit(full)) childRepos.push({ name: entry.name, path: full });
   }
   if (childRepos.length >= 2) return childRepos.sort((a, b) => a.name.localeCompare(b.name));
-  if (await isGitRepo(root)) return [{ name: path.basename(root) || ".", path: root }];
+  if (isGitRepo(root)) return [{ name: path.basename(root) || ".", path: root }];
   if (childRepos.length === 1) return childRepos;
   return [];
 }
 
-async function collectRepoState(repo, { logLimit = 10 } = {}) {
-  const [status, diffStat, logOut] = await Promise.all([
-    git(repo.path, ["status", "--short"]),
-    git(repo.path, ["diff", "--stat"]),
-    git(repo.path, ["log", `-${logLimit}`, "--oneline"]),
-  ]);
-  return { repo, status, diffStat, log: logOut };
+function collectRepoState(repo, { logLimit = 10 } = {}) {
+  return {
+    repo,
+    status: git(repo.path, ["status", "--short"]),
+    diffStat: git(repo.path, ["diff", "--stat"]),
+    log: git(repo.path, ["log", `-${logLimit}`, "--oneline"]),
+  };
 }
 
-async function hasDotGit(dir) {
-  try { const s = await stat(path.join(dir, ".git")); return s.isDirectory() || s.isFile(); } catch { return false; }
+function hasDotGit(dir) {
+  try { const s = statSync(path.join(dir, ".git")); return s.isDirectory() || s.isFile(); } catch { return false; }
 }
 
-async function isGitRepo(dir) {
-  if (await hasDotGit(dir)) return true;
-  const result = await git(dir, ["rev-parse", "--show-toplevel"]);
+function isGitRepo(dir) {
+  if (hasDotGit(dir)) return true;
+  const result = git(dir, ["rev-parse", "--show-toplevel"]);
   return path.resolve(result.trim()) === path.resolve(dir);
 }
 
-async function git(cwd, args) {
-  try { const { stdout } = await execFileAsync("git", args, { cwd, maxBuffer: 1024 * 1024 }); return stdout.trim(); } catch { return ""; }
+function git(cwd, args) {
+  try { return execFileSync("git", args, { cwd, maxBuffer: 1024 * 1024, encoding: "utf-8" }).trim(); } catch { return ""; }
 }
 
 // ── handoff ──
@@ -120,15 +119,15 @@ function indentBlock(text, prefix) { return String(text).split("\n").map((line) 
 
 // ── plugin ──
 
-async function loadTurns(root) {
-  try { const raw = await readFile(path.join(root, TURNS_FILE), "utf-8"); const p = JSON.parse(raw); if (Array.isArray(p)) return p.slice(-TURN_LOG_MAX); } catch {}
+function loadTurns(root) {
+  try { const raw = readFileSync(path.join(root, TURNS_FILE), "utf-8"); const p = JSON.parse(raw); if (Array.isArray(p)) return p.slice(-TURN_LOG_MAX); } catch {}
   return [];
 }
 
-async function saveTurns(root, turns) {
+function saveTurns(root, turns) {
   try {
-    await mkdir(path.join(root, ".opencode/local-code"), { recursive: true });
-    await writeFile(path.join(root, TURNS_FILE), JSON.stringify(turns.slice(-TURN_LOG_MAX), null, 2));
+    mkdirSync(path.join(root, ".opencode/local-code"), { recursive: true });
+    writeFileSync(path.join(root, TURNS_FILE), JSON.stringify(turns.slice(-TURN_LOG_MAX), null, 2));
   } catch (err) { log("failed to save turns:", err?.message); }
 }
 
@@ -143,12 +142,12 @@ function extractDiffStats(summaryDiffs) {
   return stats;
 }
 
-export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) => {
+export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
   const root = directory ?? project?.path ?? process.cwd();
   let sessionID = null;
   let currentModel = "unknown";
   let currentAgent = "build";
-  let turns = await loadTurns(root);
+  let turns = loadTurns(root);
   let pendingMessageID = null;
   const partBuffer = new Map();
   let seenInitialModel = false;
@@ -168,7 +167,7 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
     if (switching) { log("already switching, skip"); return; }
     switching = true;
     try {
-      const payload = await buildContextPayload({ cwd: root, previousModel: currentModel, nextModel });
+      const payload = buildContextPayload({ cwd: root, previousModel: currentModel, nextModel });
 
       const hasRelevantChanges = payload.repoStates.some((s) => s.status || s.diffStat);
       if (!payload.repos.length || !hasRelevantChanges) {
@@ -231,7 +230,7 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
           partBuffer.set(part.messageID, part.text);
           if (pendingMessageID === part.messageID && turns.length > 0) {
             turns[turns.length - 1].request = part.text;
-            saveTurns(root, turns).catch(() => {});
+            saveTurns(root, turns);
           }
         }
       }
@@ -252,7 +251,7 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
           turns.push({ model: currentModel, agent: currentAgent, request: partBuffer.get(info.id), diffStats: [], createdAt: new Date().toISOString() });
           pendingMessageID = info.id;
           if (turns.length > TURN_LOG_MAX) turns.splice(0, turns.length - TURN_LOG_MAX);
-          await saveTurns(root, turns);
+          saveTurns(root, turns);
           log("turn #" + turns.length, "model:", currentModel);
         }
 
@@ -263,7 +262,7 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
 
       if (type === "session.idle") {
         if (properties?.sessionID) sessionID = properties.sessionID;
-        if (turns.length > 0) { await saveTurns(root, turns); log("session idle, turns saved:", turns.length); }
+        if (turns.length > 0) { saveTurns(root, turns); log("session idle, turns saved:", turns.length); }
       }
     },
   };
