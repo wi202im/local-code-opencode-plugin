@@ -7,7 +7,8 @@ OpenCode TUI 안에서 모델을 바꿀 때, 기존 `local-code`의 핵심 아�
 ```text
 OpenCode TUI
   ├─ 평소 작업: OpenCode가 그대로 처리
-  ├─ 모델 전환: native /model
+  ├─ 모델 전환: native /models picker
+  ├─ 직접 입력: /model provider/model 형태도 handoff trigger로 감지
   └─ 전환 시점:
         1. 현재 workspace/repo git 상태 수집
         2. local-code 스타일 handoff prompt 생성
@@ -27,7 +28,10 @@ OpenCode TUI
   - handoff prompt 출력
 - OpenCode native plugin (`src/plugin.js`)
   - `session.created` → sessionID 획득
-  - `session.next.model.switched` → native `/model` 전환 시 context 자동 주입
+  - `session.next.model.switched` → native `/models` picker 전환 시 context 자동 주입
+  - 직접 입력 `/model provider/model` → user text event로 감지해 context 주입
+  - injected handoff와 직접 `/model` command가 turnLog에 남지 않도록 필터링
+  - 직접 `/model` command 뒤 OpenCode가 내보내는 stale model event를 무시
   - `session.next.agent.switched` → agent 추적
   - `message.part.updated` → user message text 캡처, request 매칭
   - `message.updated` → user turn 생성, diff stats 캡처, turnLog 누적
@@ -38,15 +42,16 @@ OpenCode TUI
 
 아직 작업 필요:
 
-- Plugin 이벤트 핸들러 유닛 테스트
+- 도구 호출 전후 diff stats 정확도 개선
 
 ## 사용법
 
 1. `plugin.js`를 OpenCode 플러그인으로 등록한다.
 2. OpenCode TUI 안에서 평소처럼 작업한다.
-3. `/model`로 모델을 전환하면 플러그인이 자동으로 git handoff context를 새 모델에 주입한다.
+3. `/models` picker로 모델을 전환하면 플러그인이 자동으로 git handoff context를 새 모델에 주입한다.
+4. 채팅창에 `/model provider/model`처럼 직접 입력해도 handoff context 주입을 트리거한다.
 
-별도 명령어 없이 native `/model` 전환만으로 동작한다.
+OpenCode 1.15.10 기준으로 직접 입력 `/model provider/model`은 native 모델 전환 명령이 아니라 일반 user message로 들어온다. 그래서 플러그인은 이 경로를 `message.part.updated`/`message.updated`에서 감지해 handoff를 주입하고, 해당 command가 turnLog에 남지 않도록 처리한다. 실제 모델 선택 자체는 OpenCode의 native `/models` picker가 가장 정확한 경로다.
 
 ## CLI
 

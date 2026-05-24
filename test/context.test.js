@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, writeFile, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { buildContextPayload, detectWorkspaceRepos } from "../src/context.js";
 import { renderModelHandoffPrompt } from "../src/handoff.js";
 import { splitModelID } from "../src/profiles.js";
+import { LocalCodeOpenCodePlugin } from "../src/plugin.js";
 
 test("detects a single git repo and renders handoff", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lc-opencode-"));
@@ -173,6 +174,122 @@ test("handoff includes safety clause", () => {
   const payload = makePayload();
   const rendered = renderModelHandoffPrompt(payload);
   assert.match(rendered, /push.*merge.*deploy.*publish.*release/);
+});
+
+test("plugin handles direct /model command without persisting it as a turn", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lc-opencode-direct-"));
+  git(dir, ["init"]);
+  await writeFile(path.join(dir, "README.md"), "hello\n");
+  git(dir, ["add", "README.md"]);
+  git(dir, ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init"]);
+  await writeFile(path.join(dir, "README.md"), "hello\nworld\n");
+
+  const prompts = [];
+  const plugin = await LocalCodeOpenCodePlugin({
+    directory: dir,
+    client: {
+      session: {
+        prompt: async (options) => {
+          prompts.push(options);
+        },
+      },
+    },
+  });
+
+  await plugin.event({ event: { type: "session.created", properties: { info: { id: "ses_test" } } } });
+  await plugin.event({ event: { type: "session.updated", properties: { info: { model: { providerID: "openai", modelID: "gpt-5.5" } } } } });
+  await plugin.event({
+    event: {
+      type: "message.updated",
+      properties: {
+        info: {
+          id: "msg_direct",
+          sessionID: "ses_test",
+          role: "user",
+          agent: "build",
+          model: { providerID: "openai", modelID: "gpt-5.5" },
+        },
+      },
+    },
+  });
+  await plugin.event({
+    event: {
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: "part_direct",
+          sessionID: "ses_test",
+          messageID: "msg_direct",
+          type: "text",
+          text: "/model opencode-go/deepseek-v4-pro",
+        },
+      },
+    },
+  });
+
+  await plugin.event({ event: { type: "session.updated", properties: { info: { model: { providerID: "openai", modelID: "gpt-5.5" } } } } });
+  await plugin.event({ event: { type: "message.updated", properties: { info: { id: "assistant_old", role: "assistant", providerID: "openai", modelID: "gpt-5.5" } } } });
+  await plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_test" } } });
+
+  assert.equal(prompts.length, 1);
+  const handoff = prompts[0].body.parts[0].text;
+  assert.match(handoff, /새 모델: opencode-go\/deepseek-v4-pro/);
+  assert.match(handoff, /README\.md/);
+
+  const turns = JSON.parse(await readFile(path.join(dir, ".opencode/local-code/turns.json"), "utf-8"));
+  assert.equal(turns.some((turn) => turn.request?.includes("/model opencode-go/deepseek-v4-pro")), false);
+});
+
+test("plugin does not let direct /model stale guard block a real later model switch", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lc-opencode-direct-switch-"));
+  git(dir, ["init"]);
+  await writeFile(path.join(dir, "README.md"), "hello\n");
+  git(dir, ["add", "README.md"]);
+  git(dir, ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init"]);
+  await writeFile(path.join(dir, "README.md"), "hello\nworld\n");
+
+  const prompts = [];
+  const plugin = await LocalCodeOpenCodePlugin({
+    directory: dir,
+    client: {
+      session: {
+        prompt: async (options) => {
+          prompts.push(options);
+        },
+      },
+    },
+  });
+
+  await plugin.event({ event: { type: "session.created", properties: { info: { id: "ses_test" } } } });
+  await plugin.event({ event: { type: "session.updated", properties: { info: { model: { providerID: "openai", modelID: "gpt-5.5" } } } } });
+  await plugin.event({
+    event: {
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: "part_direct",
+          sessionID: "ses_test",
+          messageID: "msg_direct",
+          type: "text",
+          text: "/model opencode-go/deepseek-v4-pro",
+        },
+      },
+    },
+  });
+  await plugin.event({ event: { type: "session.updated", properties: { info: { model: { providerID: "openai", modelID: "gpt-5.5" } } } } });
+  await plugin.event({
+    event: {
+      type: "session.next.model.switched",
+      properties: {
+        sessionID: "ses_test",
+        model: { providerID: "anthropic", id: "claude-sonnet-4-5" },
+      },
+    },
+  });
+
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[0].body.parts[0].text, /새 모델: opencode-go\/deepseek-v4-pro/);
+  assert.match(prompts[1].body.parts[0].text, /새 모델: anthropic\/claude-sonnet-4-5/);
 });
 
 function git(cwd, args) {

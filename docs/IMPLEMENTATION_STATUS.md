@@ -4,7 +4,7 @@
 
 ## 한 줄 요약
 
-현재 저장소는 **OpenCode TUI 내부에서 native `/model` 전환 시 event hook으로 자동 git handoff context를 주입하는 native plugin**이 동작하는 상태다.
+현재 저장소는 **OpenCode TUI 내부에서 native `/models` picker 전환 시 event hook으로 자동 git handoff context를 주입하고, 직접 `/model provider/model` 입력도 text-event fallback으로 handoff trigger 처리하는 native plugin**이 동작하는 상태다.
 
 대략적인 전체 구현율은 **85~90%** 수준으로 본다.
 
@@ -17,7 +17,8 @@ OpenCode TUI 안에서 모델을 바꿀 때, 대화 transcript가 아니라 **gi
 ```text
 OpenCode TUI에서 평소처럼 작업
   ↓
-모델 전환 발생 (native /model)
+모델 전환 발생 (native /models picker)
+또는 직접 /model provider/model 입력
   ↓
 plugin이 현재 repo/workspace 상태 수집
   - git status --short
@@ -95,7 +96,10 @@ lc-opencode-context --cwd . --next-model anthropic/claude-sonnet-4-5
 - OpenCode plugin export: `LocalCodeOpenCodePlugin` factory with `client`, `directory`, `project` params
 - Event hook 기반 session/model/agent 추적:
   - `session.created` → sessionID 획득
-  - `session.next.model.switched` → native `/model` 전환 시 context 자동 주입
+  - `session.next.model.switched` → native `/models` picker 전환 시 context 자동 주입
+  - 직접 `/model provider/model` 입력 → `message.part.updated`/`message.updated`로 감지해 context 주입
+  - injected handoff/direct command turnLog persistence 방지
+  - 직접 command 뒤 stale `session.updated`/assistant model event가 역방향 handoff를 만들지 않도록 guard
   - `session.next.agent.switched` → agent 추적
   - `message.part.updated` → user message text 캡처, request 매칭
   - `message.updated` → user turn 생성, diff stats 캡처, turnLog 누적
@@ -124,6 +128,7 @@ lc-opencode-context --cwd . --next-model anthropic/claude-sonnet-4-5
 남은 것:
 
 - 도구 호출 전후 diff stats 정확도 개선
+- OpenCode가 직접 `/model provider/model`을 native command로 지원하지 않는 한, 직접 입력 경로는 실제 모델 전환이 아니라 handoff trigger fallback으로 동작함
 
 ## 아직 해야 할 항목
 
@@ -157,7 +162,7 @@ npm run check
 현재 기준 기대 결과:
 
 ```text
-npm test      # 3 tests passing
+npm test      # 15 tests passing
 npm run check # syntax check passing
 ```
 
@@ -182,8 +187,9 @@ node bin/lc-opencode-context.js --cwd . --next-model opencode-go/deepseek-v4-pro
 .prodebug/opencode.json 에 plugin 등록 후 OpenCode 실행:
 
 1. OpenCode TUI 안에서 평소처럼 작업
-2. /model 로 모델 전환
+2. /models picker로 모델 전환
 3. 새 모델이 git handoff context를 받아 자연스럽게 이어서 작업하는지 확인
+4. `/model opencode-go/deepseek-v4-pro`처럼 직접 입력했을 때 handoff trigger가 동작하고, command가 turnLog에 남지 않는지 확인
 ```
 
 ## 구현율 요약
@@ -196,15 +202,14 @@ node bin/lc-opencode-context.js --cwd . --next-model opencode-go/deepseek-v4-pro
 
 ## 다음 개발 순서 제안
 
-1. TurnLog `request` 필드 캡처 (user message text)
-2. `.opencode/local-code.json` per-project config 지원
-3. Plugin 이벤트 핸들러 유닛 테스트
-4. 턴 간 git diff 정확도 개선 (도구 호출 전후 비교)
+1. 턴 간 git diff 정확도 개선 (도구 호출 전후 비교)
+2. Plugin 이벤트 핸들러 테스트를 native `/models` picker, injected handoff filtering까지 확장
+3. `.opencode/local-code.json` per-project config 지원
 
 ## 현재 결론
 
-지금 저장소는 **OpenCode TUI 안에서 event hook 기반으로 git handoff context를 자동 주입하는 native plugin**이 어느 정도 동작하는 상태다.
+지금 저장소는 **OpenCode TUI 안에서 event hook 기반으로 git handoff context를 자동 주입하는 native plugin**이 동작하는 상태다.
 
-Event payload shapes는 OpenCode 1.15.10 기준으로 검증되었고, `session.next.model.switched` 기반 context injection과 turnLog persistence가 구현되어 있다.
+Event payload shapes는 OpenCode 1.15.10 기준으로 검증되었고, `session.next.model.switched` 기반 context injection, 직접 `/model provider/model` text fallback, turnLog persistence/filtering이 구현되어 있다.
 
-남은 주요 작업은 테스트 커버리지 확장이다.
+남은 주요 작업은 도구 호출 전후 diff stats 정확도 개선과 OpenCode upstream에서 직접 모델 command 이벤트가 생길 경우의 native integration 검토다.

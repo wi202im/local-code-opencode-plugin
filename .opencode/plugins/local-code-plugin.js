@@ -147,6 +147,10 @@ function parseDirectModelCommand(text) {
   return match?.[1] ?? null;
 }
 
+function isStaleDirectModelEvent(override, model) {
+  return Boolean(override && model === override.previous && model !== override.target);
+}
+
 function extractDiffStats(summaryDiffs) {
   if (!Array.isArray(summaryDiffs) || !summaryDiffs.length) return [];
   const seen = new Set(); const stats = [];
@@ -219,7 +223,7 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
     }
 
     log("direct /model command:", currentModel, "→", nextModel);
-    directModelOverride = nextModel;
+    directModelOverride = { previous: currentModel, target: nextModel };
     await injectContext(nextModel);
     if (pendingMessageID === messageID && turns.length > 0) {
       turns.pop();
@@ -244,11 +248,11 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
         const model = properties?.model;
         if (!model) return;
         const nextModel = modelStr(model);
-        if (directModelOverride && nextModel !== directModelOverride) {
-          log("ignored stale model switch:", nextModel, "while direct target is", directModelOverride);
+        if (isStaleDirectModelEvent(directModelOverride, nextModel)) {
+          log("ignored stale model switch:", nextModel, "while direct target is", directModelOverride.target);
           return;
         }
-        if (directModelOverride === nextModel) directModelOverride = null;
+        if (directModelOverride && nextModel !== directModelOverride.previous) directModelOverride = null;
         log("model switched:", currentModel, "→", nextModel);
         await injectContext(nextModel);
       }
@@ -258,11 +262,11 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
         if (!model) return;
         const nextModel = modelStr(model);
         if (!seenInitialModel) { currentModel = nextModel; seenInitialModel = true; return; }
-        if (directModelOverride && nextModel !== directModelOverride) {
-          log("ignored stale session model:", nextModel, "while direct target is", directModelOverride);
+        if (isStaleDirectModelEvent(directModelOverride, nextModel)) {
+          log("ignored stale session model:", nextModel, "while direct target is", directModelOverride.target);
           return;
         }
-        if (directModelOverride === nextModel) directModelOverride = null;
+        if (directModelOverride && nextModel !== directModelOverride.previous) directModelOverride = null;
         if (nextModel !== currentModel) {
           log("model change in session.updated:", currentModel, "→", nextModel);
           await injectContext(nextModel);
@@ -316,7 +320,7 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
             return;
           }
           if (directModelOverride) {
-            log("cleared direct model override before normal turn:", directModelOverride);
+            log("cleared direct model override before normal turn:", directModelOverride.target);
             directModelOverride = null;
           }
           if (info.model) currentModel = modelStr(info.model, currentModel);
@@ -334,12 +338,12 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
 
         if (role === "assistant" && info.modelID && info.providerID) {
           const assistantModel = `${info.providerID}/${info.modelID}`;
-          if (directModelOverride && assistantModel !== directModelOverride) {
-            log("ignored stale assistant model:", assistantModel, "while direct target is", directModelOverride);
+          if (isStaleDirectModelEvent(directModelOverride, assistantModel)) {
+            log("ignored stale assistant model:", assistantModel, "while direct target is", directModelOverride.target);
             return;
           }
           currentModel = assistantModel;
-          if (directModelOverride === assistantModel) directModelOverride = null;
+          if (directModelOverride && assistantModel !== directModelOverride.previous) directModelOverride = null;
         }
       }
 

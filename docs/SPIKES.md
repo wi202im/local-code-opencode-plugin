@@ -57,7 +57,9 @@ await client.session.prompt({
 
 Custom command templates use `model:` frontmatter — OpenCode handles model switching automatically. Shell injection (`!\`lc-opencode-context ...\``) injects context into the prompt.
 
-For native `/model` switches, the plugin hooks `session.next.model.switched` to auto-inject context without needing to call `client.config.update()`.
+For native `/models` picker switches, the plugin hooks `session.next.model.switched` to auto-inject context without needing to call `client.config.update()`.
+
+Direct text input in the chat box such as `/model opencode-go/deepseek-v4-pro` is not a native OpenCode model switch in 1.15.10. It is observed as a normal user message/part. The plugin handles this as a fallback trigger through `message.part.updated`/`message.updated`, filters the command out of turnLog, and ignores stale model events that can arrive from the current model after the command is submitted.
 
 ## Spike 4 — turnLog reconstruction
 
