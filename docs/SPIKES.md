@@ -65,7 +65,8 @@ Direct text input in the chat box such as `/model opencode-go/deepseek-v4-pro` i
 
 Verified approach:
 - `message.updated` (role=user) → capture model/agent info, append to turnLog
-- `session.idle` → mark turn complete
+- `message.updated` (role=user) → capture git diff snapshot before assistant/tool work
+- `session.idle` → capture git diff snapshot after work, compare, mark turn complete
 - TurnLog tracks: `{ request, model, agent, diffStats, createdAt }`
 - Sliding window rendering: first 3 + last 7 turns (implemented in `handoff.js`)
-- Per-turn git diff is deferred — file changes are captured by live `git status`/`git diff --stat` at handoff time
+- Per-turn git diff stats are now generated from before/after snapshots, including staged/unstaged tracked changes and untracked files, while excluding plugin internal state under `.opencode/local-code/`

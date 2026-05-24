@@ -1,6 +1,6 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
-import { buildContextPayload } from "./context.js";
+import { buildContextPayload, collectDiffSnapshot, diffStatsBetweenSnapshots } from "./context.js";
 import { renderModelHandoffPrompt } from "./handoff.js";
 import { splitModelID } from "./profiles.js";
 
@@ -78,6 +78,7 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
 
   let turns = await loadTurns(root);
   let pendingMessageID = null;
+  let pendingDiffSnapshot = null;
   const partBuffer = new Map();
   const handledDirectModelMessages = new Set();
   let directModelOverride = null;
@@ -123,6 +124,18 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
     }
   }
 
+  async function finalizePendingTurn() {
+    if (!pendingMessageID || !pendingDiffSnapshot || turns.length === 0) return;
+    const turn = turns[turns.length - 1];
+    const after = await collectDiffSnapshot({ cwd: root });
+    const diffStats = diffStatsBetweenSnapshots(pendingDiffSnapshot, after);
+    if (diffStats.length) turn.diffStats = diffStats;
+    pendingMessageID = null;
+    pendingDiffSnapshot = null;
+    await saveTurns(root, turns);
+    log("finalized turn diff stats:", diffStats.length);
+  }
+
   async function handleDirectModelCommand(messageID, text) {
     const nextModel = parseDirectModelCommand(text);
     if (!nextModel || handledDirectModelMessages.has(messageID)) return false;
@@ -131,7 +144,10 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
     if (pendingMessageID === messageID && turns.length > 0) {
       turns.pop();
       pendingMessageID = null;
+      pendingDiffSnapshot = null;
       await saveTurns(root, turns);
+    } else {
+      await finalizePendingTurn();
     }
 
     log("direct /model command:", currentModel, "→", nextModel);
@@ -140,6 +156,7 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
     if (pendingMessageID === messageID && turns.length > 0) {
       turns.pop();
       pendingMessageID = null;
+      pendingDiffSnapshot = null;
       await saveTurns(root, turns);
       log("ignored direct /model turn");
     }
@@ -200,6 +217,7 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
             if (isLocalCodeHandoffText(part.text)) {
               turns.pop();
               pendingMessageID = null;
+              pendingDiffSnapshot = null;
               await saveTurns(root, turns);
               log("ignored injected handoff turn");
               return;
@@ -220,6 +238,7 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
           const request = partBuffer.get(info.id);
           if (handledDirectModelMessages.has(info.id)) {
             pendingMessageID = null;
+            pendingDiffSnapshot = null;
             await saveTurns(root, turns);
             log("ignored direct /model turn");
             return;
@@ -227,22 +246,23 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
           if (await handleDirectModelCommand(info.id, request)) return;
           if (isLocalCodeHandoffText(request)) {
             pendingMessageID = null;
+            pendingDiffSnapshot = null;
             await saveTurns(root, turns);
             log("ignored injected handoff turn");
             return;
           }
+          await finalizePendingTurn();
           if (directModelOverride) {
             log("cleared direct model override before normal turn:", directModelOverride.target);
             directModelOverride = null;
           }
           if (info.model) currentModel = modelStr(info.model, currentModel);
           if (info.agent) currentAgent = info.agent;
-          if (info.summary?.diffs && turns.length > 0) {
-            const last = turns[turns.length - 1];
-            if (!last.diffStats.length) last.diffStats = extractDiffStats(info.summary.diffs);
-          }
-          turns.push({ model: currentModel, agent: currentAgent, request, diffStats: [], createdAt: new Date().toISOString() });
+          const initialDiffStats = extractDiffStats(info.summary?.diffs);
+          const before = await collectDiffSnapshot({ cwd: root });
+          turns.push({ model: currentModel, agent: currentAgent, request, diffStats: initialDiffStats, createdAt: new Date().toISOString() });
           pendingMessageID = info.id;
+          pendingDiffSnapshot = before;
           if (turns.length > TURN_LOG_MAX) turns.splice(0, turns.length - TURN_LOG_MAX);
           await saveTurns(root, turns);
           log("turn #" + turns.length, "model:", currentModel);
@@ -261,6 +281,7 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
 
       if (type === "session.idle") {
         if (properties?.sessionID) sessionID = properties.sessionID;
+        await finalizePendingTurn();
         if (turns.length > 0) { await saveTurns(root, turns); log("session idle, turns saved:", turns.length); }
       }
     },

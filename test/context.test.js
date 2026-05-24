@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { buildContextPayload, detectWorkspaceRepos } from "../src/context.js";
+import { buildContextPayload, collectDiffSnapshot, detectWorkspaceRepos, diffStatsBetweenSnapshots } from "../src/context.js";
 import { renderModelHandoffPrompt } from "../src/handoff.js";
 import { splitModelID } from "../src/profiles.js";
 import { LocalCodeOpenCodePlugin } from "../src/plugin.js";
@@ -176,6 +176,48 @@ test("handoff includes safety clause", () => {
   assert.match(rendered, /push.*merge.*deploy.*publish.*release/);
 });
 
+test("diff snapshots capture changed and untracked files", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lc-opencode-snapshot-"));
+  git(dir, ["init"]);
+  await writeFile(path.join(dir, "README.md"), "hello\n");
+  git(dir, ["add", "README.md"]);
+  git(dir, ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init"]);
+  await writeFile(path.join(dir, "draft.md"), "before\n");
+
+  const before = await collectDiffSnapshot({ cwd: dir });
+  await writeFile(path.join(dir, "README.md"), "hello\nworld\n");
+  git(dir, ["add", "README.md"]);
+  await writeFile(path.join(dir, "draft.md"), "after\n");
+  await writeFile(path.join(dir, "notes.md"), "new file\n");
+  const after = await collectDiffSnapshot({ cwd: dir });
+
+  const stats = diffStatsBetweenSnapshots(before, after);
+  assert.deepEqual(stats.map((entry) => entry.path).sort(), ["README.md", "draft.md", "notes.md"]);
+  assert.match(stats.find((entry) => entry.path === "README.md").diffStat, /README\.md/);
+  assert.equal(stats.find((entry) => entry.path === "draft.md").diffStat, "(untracked file)");
+  assert.equal(stats.find((entry) => entry.path === "notes.md").diffStat, "(untracked file)");
+});
+
+test("diff snapshots label files with repo name in multi-repo workspaces", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "lc-opencode-snapshot-workspace-"));
+  for (const name of ["api", "web"]) {
+    const dir = path.join(root, name);
+    await mkdir(dir);
+    git(dir, ["init"]);
+    await writeFile(path.join(dir, "README.md"), `${name}\n`);
+    git(dir, ["add", "README.md"]);
+    git(dir, ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init"]);
+  }
+
+  const before = await collectDiffSnapshot({ cwd: root });
+  await writeFile(path.join(root, "api", "README.md"), "api\nchanged\n");
+  await writeFile(path.join(root, "web", "notes.md"), "new file\n");
+  const after = await collectDiffSnapshot({ cwd: root });
+
+  const stats = diffStatsBetweenSnapshots(before, after);
+  assert.deepEqual(stats.map((entry) => entry.path).sort(), ["api/README.md", "web/notes.md"]);
+});
+
 test("plugin handles direct /model command without persisting it as a turn", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lc-opencode-direct-"));
   git(dir, ["init"]);
@@ -238,6 +280,63 @@ test("plugin handles direct /model command without persisting it as a turn", asy
 
   const turns = JSON.parse(await readFile(path.join(dir, ".opencode/local-code/turns.json"), "utf-8"));
   assert.equal(turns.some((turn) => turn.request?.includes("/model opencode-go/deepseek-v4-pro")), false);
+});
+
+test("plugin finalizes turn diff stats from git snapshot changes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lc-opencode-turn-diff-"));
+  git(dir, ["init"]);
+  await writeFile(path.join(dir, "README.md"), "hello\n");
+  git(dir, ["add", "README.md"]);
+  git(dir, ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init"]);
+
+  const plugin = await LocalCodeOpenCodePlugin({
+    directory: dir,
+    client: {
+      session: {
+        prompt: async () => {},
+      },
+    },
+  });
+
+  await plugin.event({ event: { type: "session.created", properties: { info: { id: "ses_test" } } } });
+  await plugin.event({ event: { type: "session.updated", properties: { info: { model: { providerID: "openai", modelID: "gpt-5.5" } } } } });
+  await plugin.event({
+    event: {
+      type: "message.updated",
+      properties: {
+        info: {
+          id: "msg_turn",
+          sessionID: "ses_test",
+          role: "user",
+          agent: "build",
+          model: { providerID: "openai", modelID: "gpt-5.5" },
+        },
+      },
+    },
+  });
+  await plugin.event({
+    event: {
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: "part_turn",
+          sessionID: "ses_test",
+          messageID: "msg_turn",
+          type: "text",
+          text: "README와 notes를 업데이트해줘",
+        },
+      },
+    },
+  });
+
+  await writeFile(path.join(dir, "README.md"), "hello\nworld\n");
+  await writeFile(path.join(dir, "notes.md"), "new file\n");
+  await plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_test" } } });
+
+  const turns = JSON.parse(await readFile(path.join(dir, ".opencode/local-code/turns.json"), "utf-8"));
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].request, "README와 notes를 업데이트해줘");
+  assert.deepEqual(turns[0].diffStats.map((entry) => entry.path).sort(), ["README.md", "notes.md"]);
 });
 
 test("plugin does not let direct /model stale guard block a real later model switch", async () => {

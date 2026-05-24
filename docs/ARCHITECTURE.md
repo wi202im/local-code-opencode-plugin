@@ -26,6 +26,7 @@ New model continues using git status/diff/log as source of truth
 - `src/context.js`
   - workspace/repo detection
   - repo state collection
+  - turn-level git diff snapshot collection/comparison
 - `src/handoff.js`
   - local-code style model handoff prompt rendering
   - sliding-window turnLog renderer
@@ -47,6 +48,8 @@ For direct text input such as `/model opencode-go/deepseek-v4-pro`, OpenCode 1.1
 ## TurnLog approach
 
 The plugin listens to `message.updated` (role=user) for turn creation and `session.idle` for persistence. TurnLog is a session-local bounded cache — git state remains the durable source of truth.
+
+For per-turn file summaries, the plugin captures a git diff snapshot when a user turn starts, then captures another snapshot at `session.idle`. It records files whose staged/unstaged tracked diff signature changed and untracked files that appeared or changed during the turn. Plugin internal state under `.opencode/local-code/` is filtered out so handoff context does not report its own persistence writes.
 
 ## Open questions
 

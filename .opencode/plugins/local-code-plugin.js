@@ -9,6 +9,7 @@ const HANDOFF_PREFIX = "[Local-code model handoff]";
 const DIRECT_MODEL_RE = /^\/model\s+([^\s/]+\/[^\s]+)\s*$/;
 const DEFAULT_HEAD_KEEP = 3;
 const DEFAULT_TAIL_KEEP = 7;
+const INTERNAL_DIFF_PATH_PREFIX = ".opencode/local-code/";
 
 const DEBUG = process.env.LOCAL_CODE_OPENCODE_DEBUG === "1";
 const log = (...args) => DEBUG && console.error("[lc-plugin]", ...args);
@@ -20,6 +21,38 @@ function buildContextPayload({ cwd = process.cwd(), previousModel = "unknown", n
   const repos = detectWorkspaceRepos(workspaceRoot);
   const repoStates = repos.map((repo) => collectRepoState(repo, { logLimit }));
   return { kind: "local-code-opencode-model-handoff", generatedAt: new Date().toISOString(), workspaceRoot, previousModel, nextModel, repos, repoStates, turnLog: [] };
+}
+
+function collectDiffSnapshot({ cwd = process.cwd() } = {}) {
+  const workspaceRoot = path.resolve(cwd);
+  const repos = detectWorkspaceRepos(workspaceRoot).map((repo) => collectRepoDiffSnapshot(repo));
+  return { workspaceRoot, repos };
+}
+
+function diffStatsBetweenSnapshots(before, after) {
+  const beforeRepos = new Map((before?.repos ?? []).map((repo) => [repo.repo.path, repo]));
+  const afterRepos = new Map((after?.repos ?? []).map((repo) => [repo.repo.path, repo]));
+  const multiRepo = new Set([...beforeRepos.keys(), ...afterRepos.keys()]).size > 1;
+  const stats = [];
+
+  for (const [repoPath, afterRepo] of afterRepos) {
+    const beforeRepo = beforeRepos.get(repoPath);
+    for (const [file, afterFile] of Object.entries(afterRepo.files ?? {})) {
+      const beforeFile = beforeRepo?.files?.[file];
+      if (beforeFile?.signature === afterFile.signature) continue;
+      stats.push(formatSnapshotFile(afterRepo.repo, file, afterFile.diffStat, multiRepo));
+    }
+  }
+
+  for (const [repoPath, beforeRepo] of beforeRepos) {
+    const afterRepo = afterRepos.get(repoPath);
+    for (const file of Object.keys(beforeRepo.files ?? {})) {
+      if (afterRepo?.files?.[file]) continue;
+      stats.push(formatSnapshotFile(beforeRepo.repo, file, "(reverted to clean during turn)", multiRepo));
+    }
+  }
+
+  return stats;
 }
 
 function detectWorkspaceRepos(root) {
@@ -44,6 +77,55 @@ function collectRepoState(repo, { logLimit = 10 } = {}) {
     diffStat: git(repo.path, ["diff", "--stat"]),
     log: git(repo.path, ["log", `-${logLimit}`, "--oneline"]),
   };
+}
+
+function collectRepoDiffSnapshot(repo) {
+  const numstat = git(repo.path, ["diff", "HEAD", "--numstat"]);
+  const nameStatus = git(repo.path, ["diff", "HEAD", "--name-status"]);
+  const untracked = git(repo.path, ["ls-files", "--others", "--exclude-standard"]);
+  const signatures = new Map();
+
+  for (const line of numstat.split("\n").filter(Boolean)) {
+    const parts = line.split("\t");
+    const file = parts.at(-1);
+    if (file && !isInternalDiffPath(file)) signatures.set(file, line);
+  }
+
+  for (const line of nameStatus.split("\n").filter(Boolean)) {
+    const parts = line.split("\t");
+    const file = parts.at(-1);
+    if (file && !isInternalDiffPath(file)) signatures.set(file, `${signatures.get(file) ?? ""}|${line}`);
+  }
+
+  for (const file of untracked.split("\n").filter(Boolean)) {
+    if (isInternalDiffPath(file)) continue;
+    const hash = git(repo.path, ["hash-object", "--", file]);
+    signatures.set(file, `untracked:${file}:${hash}`);
+  }
+
+  const files = {};
+  for (const [file, signature] of signatures) {
+    files[file] = {
+      signature,
+      diffStat: signature.startsWith("untracked:")
+        ? "(untracked file)"
+        : git(repo.path, ["diff", "HEAD", "--stat", "--", file]),
+    };
+  }
+  return { repo, files };
+}
+
+function formatSnapshotFile(repo, file, diffStat, multiRepo) {
+  const renderedPath = multiRepo ? `${repo.name}/${file}` : file;
+  return {
+    name: path.basename(file) || file,
+    path: renderedPath,
+    diffStat: diffStat || "(변경 없음)",
+  };
+}
+
+function isInternalDiffPath(file) {
+  return file === ".opencode/local-code" || file.startsWith(INTERNAL_DIFF_PATH_PREFIX);
 }
 
 function hasDotGit(dir) {
@@ -169,6 +251,7 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
   let currentAgent = "build";
   let turns = loadTurns(root);
   let pendingMessageID = null;
+  let pendingDiffSnapshot = null;
   const partBuffer = new Map();
   const handledDirectModelMessages = new Set();
   let directModelOverride = null;
@@ -211,6 +294,18 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
     }
   }
 
+  async function finalizePendingTurn() {
+    if (!pendingMessageID || !pendingDiffSnapshot || turns.length === 0) return;
+    const turn = turns[turns.length - 1];
+    const after = collectDiffSnapshot({ cwd: root });
+    const diffStats = diffStatsBetweenSnapshots(pendingDiffSnapshot, after);
+    if (diffStats.length) turn.diffStats = diffStats;
+    pendingMessageID = null;
+    pendingDiffSnapshot = null;
+    saveTurns(root, turns);
+    log("finalized turn diff stats:", diffStats.length);
+  }
+
   async function handleDirectModelCommand(messageID, text) {
     const nextModel = parseDirectModelCommand(text);
     if (!nextModel || handledDirectModelMessages.has(messageID)) return false;
@@ -219,7 +314,10 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
     if (pendingMessageID === messageID && turns.length > 0) {
       turns.pop();
       pendingMessageID = null;
+      pendingDiffSnapshot = null;
       saveTurns(root, turns);
+    } else {
+      await finalizePendingTurn();
     }
 
     log("direct /model command:", currentModel, "→", nextModel);
@@ -228,6 +326,7 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
     if (pendingMessageID === messageID && turns.length > 0) {
       turns.pop();
       pendingMessageID = null;
+      pendingDiffSnapshot = null;
       saveTurns(root, turns);
       log("ignored direct /model turn");
     }
@@ -288,6 +387,7 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
             if (isLocalCodeHandoffText(part.text)) {
               turns.pop();
               pendingMessageID = null;
+              pendingDiffSnapshot = null;
               saveTurns(root, turns);
               log("ignored injected handoff turn");
               return;
@@ -308,6 +408,7 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
           const request = partBuffer.get(info.id);
           if (handledDirectModelMessages.has(info.id)) {
             pendingMessageID = null;
+            pendingDiffSnapshot = null;
             saveTurns(root, turns);
             log("ignored direct /model turn");
             return;
@@ -315,22 +416,23 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
           if (await handleDirectModelCommand(info.id, request)) return;
           if (isLocalCodeHandoffText(request)) {
             pendingMessageID = null;
+            pendingDiffSnapshot = null;
             saveTurns(root, turns);
             log("ignored injected handoff turn");
             return;
           }
+          await finalizePendingTurn();
           if (directModelOverride) {
             log("cleared direct model override before normal turn:", directModelOverride.target);
             directModelOverride = null;
           }
           if (info.model) currentModel = modelStr(info.model, currentModel);
           if (info.agent) currentAgent = info.agent;
-          if (info.summary?.diffs && turns.length > 0) {
-            const last = turns[turns.length - 1];
-            if (!last.diffStats.length) last.diffStats = extractDiffStats(info.summary.diffs);
-          }
-          turns.push({ model: currentModel, agent: currentAgent, request, diffStats: [], createdAt: new Date().toISOString() });
+          const initialDiffStats = extractDiffStats(info.summary?.diffs);
+          const before = collectDiffSnapshot({ cwd: root });
+          turns.push({ model: currentModel, agent: currentAgent, request, diffStats: initialDiffStats, createdAt: new Date().toISOString() });
           pendingMessageID = info.id;
+          pendingDiffSnapshot = before;
           if (turns.length > TURN_LOG_MAX) turns.splice(0, turns.length - TURN_LOG_MAX);
           saveTurns(root, turns);
           log("turn #" + turns.length, "model:", currentModel);
@@ -349,6 +451,7 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
 
       if (type === "session.idle") {
         if (properties?.sessionID) sessionID = properties.sessionID;
+        await finalizePendingTurn();
         if (turns.length > 0) { saveTurns(root, turns); log("session idle, turns saved:", turns.length); }
       }
     },

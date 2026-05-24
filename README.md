@@ -34,15 +34,17 @@ OpenCode TUI
   - 직접 `/model` command 뒤 OpenCode가 내보내는 stale model event를 무시
   - `session.next.agent.switched` → agent 추적
   - `message.part.updated` → user message text 캡처, request 매칭
-  - `message.updated` → user turn 생성, diff stats 캡처, turnLog 누적
-  - `session.idle` → turn 저장
+  - `message.updated` → user turn 생성, 시작 시점 git diff snapshot 캡처, turnLog 누적
+  - `session.idle` → 종료 시점 git diff snapshot 비교 후 turn 저장
   - TurnLog persistence: `.opencode/local-code/turns.json` (최대 50개)
+  - Per-turn diff stats: staged/unstaged tracked 변경과 untracked 파일을 git snapshot 비교로 기록
   - Sliding window 렌더링: 처음 3 + 최근 7개 turn
   - 방어 로직: repo 미발견 또는 변경사항 없을 시 injection 스킵
 
 아직 작업 필요:
 
-- 도구 호출 전후 diff stats 정확도 개선
+- `.opencode/local-code.json` 같은 per-project config 지원
+- plugin 이벤트 핸들러 테스트 구조 분리/확장
 
 ## 사용법
 
