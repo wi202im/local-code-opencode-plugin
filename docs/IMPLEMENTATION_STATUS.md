@@ -171,7 +171,7 @@ npm run check
 현재 기준 기대 결과:
 
 ```text
-npm test      # 20 tests passing
+npm test      # 23 tests passing
 npm run check # syntax check passing
 ```
 

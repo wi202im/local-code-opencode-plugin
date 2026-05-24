@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { LocalCodeOpenCodePlugin } from "../src/plugin.js";
 import { initRepo, makeTempDir } from "../test-support/helpers.js";
@@ -125,6 +125,76 @@ test("plugin finalizes turn diff stats from git snapshot changes", async () => {
   assert.deepEqual(turns[0].diffStats.map((entry) => entry.path).sort(), ["README.md", "notes.md"]);
 });
 
+test("plugin updates repeated user message events without duplicating turns", async () => {
+  const dir = await makePluginRepo("lc-opencode-repeat-user-");
+  const plugin = await LocalCodeOpenCodePlugin({ directory: dir, client: makeClient() });
+
+  await sendSessionCreated(plugin);
+  await sendInitialModel(plugin);
+  const userEvent = {
+    event: {
+      type: "message.updated",
+      properties: {
+        info: {
+          id: "msg_repeat",
+          sessionID: "ses_test",
+          role: "user",
+          agent: "build",
+          model: { providerID: "openai", modelID: "gpt-5.5" },
+        },
+      },
+    },
+  };
+
+  await plugin.event(userEvent);
+  await plugin.event({
+    event: {
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: "part_repeat",
+          sessionID: "ses_test",
+          messageID: "msg_repeat",
+          type: "text",
+          text: "같은 user message.updated가 다시 와도 한 turn만 남겨줘",
+        },
+      },
+    },
+  });
+  await plugin.event(userEvent);
+  await plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_test" } } });
+
+  const turns = JSON.parse(await readFile(path.join(dir, ".opencode/local-code/turns.json"), "utf-8"));
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].request, "같은 user message.updated가 다시 와도 한 turn만 남겨줘");
+});
+
+test("plugin drops empty no-op pending turns", async () => {
+  const dir = await makePluginRepo("lc-opencode-empty-turn-");
+  const plugin = await LocalCodeOpenCodePlugin({ directory: dir, client: makeClient() });
+
+  await sendSessionCreated(plugin);
+  await sendInitialModel(plugin);
+  await plugin.event({
+    event: {
+      type: "message.updated",
+      properties: {
+        info: {
+          id: "msg_empty",
+          sessionID: "ses_test",
+          role: "user",
+          agent: "build",
+          model: { providerID: "openai", modelID: "gpt-5.5" },
+        },
+      },
+    },
+  });
+  await plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_test" } } });
+
+  const turns = JSON.parse(await readFile(path.join(dir, ".opencode/local-code/turns.json"), "utf-8"));
+  assert.equal(turns.length, 0);
+});
+
 test("plugin does not let direct /model stale guard block a real later model switch", async () => {
   const dir = await makePluginRepo("lc-opencode-direct-switch-");
   await writeFile(path.join(dir, "README.md"), "hello\nworld\n");
@@ -162,4 +232,36 @@ test("plugin does not let direct /model stale guard block a real later model swi
   assert.equal(prompts.length, 2);
   assert.match(prompts[0].body.parts[0].text, /새 모델: opencode-go\/deepseek-v4-pro/);
   assert.match(prompts[1].body.parts[0].text, /새 모델: anthropic\/claude-sonnet-4-5/);
+});
+
+test("plugin injects on continued-session model switch using event sessionID", async () => {
+  const dir = await makePluginRepo("lc-opencode-continued-switch-");
+  await mkdir(path.join(dir, ".opencode/local-code"), { recursive: true });
+  await writeFile(path.join(dir, ".opencode/local-code/turns.json"), JSON.stringify([{
+    model: "openai/gpt-5.3-codex",
+    agent: "build",
+    request: "previous turn",
+    diffStats: [],
+    createdAt: new Date().toISOString(),
+  }], null, 2));
+  await writeFile(path.join(dir, "README.md"), "hello\ncontinued switch change\n");
+
+  const prompts = [];
+  const plugin = await LocalCodeOpenCodePlugin({ directory: dir, client: makeClient(prompts) });
+
+  await plugin.event({
+    event: {
+      type: "session.next.model.switched",
+      properties: {
+        sessionID: "ses_continued",
+        model: { providerID: "openai", id: "gpt-5.4-mini" },
+      },
+    },
+  });
+
+  assert.equal(prompts.length, 1);
+  const handoff = prompts[0].body.parts[0].text;
+  assert.match(handoff, /이전 모델: openai\/gpt-5\.3-codex/);
+  assert.match(handoff, /새 모델: openai\/gpt-5\.4-mini/);
+  assert.deepEqual(prompts[0].path, { id: "ses_continued" });
 });

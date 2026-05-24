@@ -77,6 +77,9 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
   let currentAgent = "build";
 
   let turns = await loadTurns(root);
+  const lastTurn = turns.at(-1);
+  if (lastTurn?.model) currentModel = lastTurn.model;
+  if (lastTurn?.agent) currentAgent = lastTurn.agent;
   let pendingMessageID = null;
   let pendingDiffSnapshot = null;
   const partBuffer = new Map();
@@ -130,6 +133,7 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
     const after = await collectDiffSnapshot({ cwd: root });
     const diffStats = diffStatsBetweenSnapshots(pendingDiffSnapshot, after);
     if (diffStats.length) turn.diffStats = diffStats;
+    if (!turn.request && !turn.diffStats.length) turns.pop();
     pendingMessageID = null;
     pendingDiffSnapshot = null;
     await saveTurns(root, turns);
@@ -174,6 +178,7 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
       }
 
       if (type === "session.next.model.switched") {
+        if (properties?.sessionID) sessionID = properties.sessionID;
         const model = properties?.model;
         if (!model) return;
         const nextModel = modelStr(model);
@@ -249,6 +254,15 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
             pendingDiffSnapshot = null;
             await saveTurns(root, turns);
             log("ignored injected handoff turn");
+            return;
+          }
+          if (pendingMessageID === info.id && turns.length > 0) {
+            const last = turns[turns.length - 1];
+            if (request && !isLocalCodeHandoffText(request)) last.request = request;
+            const fallbackDiffStats = extractDiffStats(info.summary?.diffs);
+            if (!last.diffStats.length && fallbackDiffStats.length) last.diffStats = fallbackDiffStats;
+            await saveTurns(root, turns);
+            log("updated pending turn:", info.id);
             return;
           }
           await finalizePendingTurn();
