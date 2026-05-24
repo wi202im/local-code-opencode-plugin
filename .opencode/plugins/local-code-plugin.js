@@ -46,6 +46,8 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
   const root = directory ?? project?.path ?? process.cwd();
 
   let turns = await loadTurns(root);
+  let pendingMessageID = null;
+  const partBuffer = new Map();
   let sessionID = null;
   let currentModel = "unknown";
   let currentAgent = "build";
@@ -109,6 +111,18 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
       if (agent) { currentAgent = agent; log("agent:", agent); }
     },
 
+    "message.part.updated": (input) => {
+      const part = input?.properties?.part;
+      if (!part) return;
+      if (part.type === "text" && part.messageID) {
+        partBuffer.set(part.messageID, part.text);
+        if (pendingMessageID === part.messageID && turns.length > 0) {
+          turns[turns.length - 1].request = part.text;
+          saveTurns(root, turns).catch(() => {});
+        }
+      }
+    },
+
     "message.updated": async (input) => {
       const props = input?.properties;
       if (!props) return;
@@ -132,9 +146,11 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
         turns.push({
           model: currentModel,
           agent: currentAgent,
+          request: partBuffer.get(info.id),
           diffStats: [],
           createdAt: new Date().toISOString(),
         });
+        pendingMessageID = info.id;
 
         if (turns.length > TURN_LOG_MAX) {
           turns.splice(0, turns.length - TURN_LOG_MAX);

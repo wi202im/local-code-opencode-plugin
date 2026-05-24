@@ -29,6 +29,7 @@ OpenCode TUI
   - `session.created` → sessionID 획득
   - `session.next.model.switched` → native `/model` 전환 시 context 자동 주입
   - `session.next.agent.switched` → agent 추적
+  - `message.part.updated` → user message text 캡처, request 매칭
   - `message.updated` → user turn 생성, diff stats 캡처, turnLog 누적
   - `session.idle` → turn 저장
   - TurnLog persistence: `.opencode/local-code/turns.json` (최대 50개)
@@ -37,7 +38,6 @@ OpenCode TUI
 
 아직 작업 필요:
 
-- TurnLog에 user message text (`request` 필드) 캡처
 - `.opencode/local-code.json` per-project config
 - Plugin 이벤트 핸들러 유닛 테스트
 

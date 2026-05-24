@@ -6,7 +6,7 @@
 
 현재 저장소는 **OpenCode TUI 내부에서 native `/model` 전환 시 event hook으로 자동 git handoff context를 주입하는 native plugin**이 동작하는 상태다.
 
-대략적인 전체 구현율은 **75~80%** 수준으로 본다.
+대략적인 전체 구현율은 **80~85%** 수준으로 본다.
 
 ## 최종 목표
 
@@ -97,6 +97,7 @@ lc-opencode-context --cwd . --next-model anthropic/claude-sonnet-4-5
   - `session.created` → sessionID 획득
   - `session.next.model.switched` → native `/model` 전환 시 context 자동 주입
   - `session.next.agent.switched` → agent 추적
+  - `message.part.updated` → user message text 캡처, request 매칭
   - `message.updated` → user turn 생성, diff stats 캡처, turnLog 누적
   - `session.idle` → turn 저장
 - `client.session.prompt({ noReply: true, parts: [...] })` 기반 context-only injection
@@ -108,7 +109,6 @@ lc-opencode-context --cwd . --next-model anthropic/claude-sonnet-4-5
 
 아직 확정되지 않은 것:
 
-- TurnLog의 `request` 필드 (현재 user message text가 정확히 어디 있는지 spike 필요)
 - `.opencode/local-code.json` per-project config (profiles, options)
 
 ### 3. Model profile mapping
@@ -135,20 +135,20 @@ lc-opencode-context --cwd . --next-model anthropic/claude-sonnet-4-5
 
 ### 4. turnLog / 작업 단위 추적
 
-구현율: **60~70%**
+구현율: **80~85%**
 
 현재 상태:
 
 - `message.updated` (role=user) → model/agent 캡처, turn 생성
+- `message.part.updated` → `part.messageID`로 user message text 매칭, `request` 필드 저장
 - `info.summary.diffs` → per-turn diff stats 추출
 - `session.idle` → turn 저장
-- TurnLog shape: `{ model, agent, diffStats, createdAt }`
+- TurnLog shape: `{ model, agent, request, diffStats, createdAt }`
 - Persistence: `.opencode/local-code/turns.json` (최대 50개)
 - Sliding window: 처음 3 + 최근 7개 (handoff.js)
 
 남은 것:
 
-- `request` 필드 (user message text) 캡처
 - 도구 호출 전후 diff stats 정확도 개선
 
 ## 아직 해야 할 항목
@@ -157,15 +157,15 @@ lc-opencode-context --cwd . --next-model anthropic/claude-sonnet-4-5
 
 우선순위 높은 항목:
 
-1. **TurnLog `request` 필드 캡처**
-   - `message.updated` 이벤트에서 user message text 추출
-
-2. **Per-project config**
+1. **Per-project config**
    - `.opencode/local-code.json` 으로 profiles, options 외부화
 
-3. **테스트 커버리지 확장**
+2. **테스트 커버리지 확장**
    - plugin 이벤트 핸들러 단위 테스트
    - handoff 렌더링 테스트
+
+3. **턴 간 git diff 정확도 개선**
+   - 도구 호출 전후 git diff 비교
 
 ## 로컬 테스트 가이드
 
@@ -221,8 +221,8 @@ node bin/lc-opencode-context.js --cwd . --next-model opencode-go/deepseek-v4-pro
 - CLI handoff generator: **80~90%**
 - Native OpenCode plugin: **80~85%**
 - Model profiles: **70~80%**
-- turnLog: **60~70%**
-- 전체 최종 목표 기준: **75~80%**
+- turnLog: **80~85%**
+- 전체 최종 목표 기준: **80~85%**
 
 ## 다음 개발 순서 제안
 
@@ -237,4 +237,4 @@ node bin/lc-opencode-context.js --cwd . --next-model opencode-go/deepseek-v4-pro
 
 Event payload shapes는 OpenCode 1.15.10 기준으로 검증되었고, `session.next.model.switched` 기반 context injection과 turnLog persistence가 구현되어 있다.
 
-남은 주요 작업은 turnLog request 텍스트 캡처와 per-project config 지원이다.
+남은 주요 작업은 per-project config 지원과 테스트 커버리지 확장이다.
