@@ -11,8 +11,7 @@
 ```text
 User in OpenCode TUI
   ↓
-/lc-deepseek, /lc-codex, ...    # custom commands (model: frontmatter)
-or native /model                # session.next.model.switched hook
+native /model                    # session.next.model.switched hook
   ↓
 Plugin builds local-code style handoff context
   ↓
@@ -28,21 +27,21 @@ New model continues using git status/diff/log as source of truth
   - repo state collection
 - `src/handoff.js`
   - local-code style model handoff prompt rendering
-  - sliding-window turnLog renderer placeholder
+  - sliding-window turnLog renderer
 - `src/plugin.js`
-  - OpenCode event hooks (session.created, model.switched, command.executed, message.updated, session.idle)
+  - OpenCode event hooks (session.created, session.next.model.switched, session.next.agent.switched, message.updated, session.idle)
   - TurnLog collection and persistence (`.opencode/local-code/turns.json`)
   - `noReply:true` context injection
-- `templates/opencode/commands/*.md`
-  - command-based MVP before plugin event behavior is fully verified
+- `src/profiles.js`
+  - model profile definitions and utilities
 
-## Why command MVP first
+## Why event-driven plugin
 
-OpenCode officially supports command frontmatter `model:` and shell output injection via `!\`command\``. That is enough to prove the core UX without depending on undocumented model selector event details.
+The plugin hooks `session.next.model.switched` to automatically inject git-based handoff context whenever the user switches models via native `/model`. This requires no manual commands or configuration — it works transparently within the TUI.
 
-## Why plugin final
+## TurnLog approach
 
-The command MVP cannot reliably observe every user turn, so it cannot recreate the original local-code `turnLog` quality. A plugin can listen to OpenCode message/session events and build a session-local turn map.
+The plugin listens to `message.updated` (role=user) for turn creation and `session.idle` for persistence. TurnLog is a session-local bounded cache — git state remains the durable source of truth.
 
 ## Open questions
 
@@ -53,6 +52,6 @@ The command MVP cannot reliably observe every user turn, so it cannot recreate t
 
 1. Event after native `/models` selection → `session.next.model.switched` (verified in OpenCode 1.15.10)
 2. Event payload includes previous/new model info → yes, via `properties.model.{id,providerID}`
-3. How to get active TUI session id → `session.created` / `message.updated` / `command.executed` / `session.idle`
-4. Model state sync → Custom commands use `model:` frontmatter (OpenCode handles switching). Native switches use `session.next.model.switched` hook.
+3. How to get active TUI session id → `session.created` / `message.updated` / `session.idle`
+4. Model state sync → `session.next.model.switched` hook auto-injects context; no manual model state management needed
 5. TurnLog approach → `message.updated` (role=user) for turn creation, `session.idle` for persistence

@@ -4,11 +4,9 @@
 
 ## 한 줄 요약
 
-현재 저장소는 **local-code식 git handoff context 생성기 + OpenCode custom command bridge 초안**까지 구현되어 있다.
+현재 저장소는 **OpenCode TUI 내부에서 native `/model` 전환 시 event hook으로 자동 git handoff context를 주입하는 native plugin**이 동작하는 상태다.
 
-최종 목표인 **OpenCode TUI 내부 모델 전환 시점에 자동으로 git 기반 context를 주입하는 native plugin**은 아직 spike/검증 단계가 남아 있다.
-
-대략적인 전체 구현율은 **65~70%** 수준으로 본다.
+대략적인 전체 구현율은 **70~75%** 수준으로 본다.
 
 ## 최종 목표
 
@@ -19,10 +17,7 @@ OpenCode TUI 안에서 모델을 바꿀 때, 대화 transcript가 아니라 **gi
 ```text
 OpenCode TUI에서 평소처럼 작업
   ↓
-모델 전환 발생
-  - /lc-model sonnet
-  - /lc-sonnet 같은 custom command
-  - 가능하면 native /models 선택 이벤트
+모델 전환 발생 (native /model)
   ↓
 plugin이 현재 repo/workspace 상태 수집
   - git status --short
@@ -40,7 +35,7 @@ plugin이 현재 repo/workspace 상태 수집
 - OpenCode TUI 기본 UX를 해치지 않는다.
 - transcript나 durable handoff file을 source of truth로 만들지 않는다.
 - git 상태를 최우선 source of truth로 삼는다.
-- 모델 전환/명령 시점에만 개입한다.
+- 모델 전환 시점에만 개입한다.
 - 사용자 승인 없이 `push`, `merge`, `deploy`, `publish`, `release`하지 말라는 안전 문구를 handoff에 포함한다.
 - turnLog는 session-local/bounded cache로만 사용한다.
 
@@ -86,53 +81,9 @@ node bin/lc-opencode-context.js \
 lc-opencode-context --cwd . --next-model anthropic/claude-sonnet-4-5
 ```
 
-### 2. OpenCode custom command bridge
+### 2. Native OpenCode plugin
 
-구현율: **90~95%**
-
-구현 파일:
-
-- `templates/opencode/commands/lc-codex.md`
-- `templates/opencode/commands/lc-gpt55.md`
-- `templates/opencode/commands/lc-deepseek.md`
-- `templates/opencode/commands/lc-qwen.md`
-- `templates/opencode/commands/lc-kimi.md`
-- `templates/opencode/commands/lc-review.md`
-
-현재 의도한 방식:
-
-1. 사용자가 프로젝트의 `.opencode/commands/`에 템플릿을 복사한다.
-2. OpenCode TUI에서 `/lc-sonnet`, `/lc-qwen` 같은 custom command를 실행한다.
-3. command frontmatter의 `model:`이 해당 turn의 모델을 지정한다.
-4. command body의 shell injection이 `lc-opencode-context`를 실행해 git handoff context를 prompt에 포함한다.
-5. 사용자의 `$ARGUMENTS`와 함께 새 모델이 이어서 답한다.
-
-설치 예시:
-
-```bash
-mkdir -p .opencode/commands
-cp templates/opencode/commands/*.md .opencode/commands/
-```
-
-OpenCode TUI 예시:
-
-```text
-/lc-deepseek 이어서 진행해줘
-/lc-codex 이거 구현해줘
-/lc-gpt55 복잡한 리팩토링 부탁해
-/lc-qwen 빠르게 구조만 훑어줘
-/lc-kimi 긴 로그 분석해줘
-/lc-review 현재 diff 리뷰해줘
-```
-
-주의:
-
-- 이 방식은 native plugin이 아니라 command bridge다.
-- OpenCode의 custom command `model:` frontmatter와 shell output injection이 실제 사용 환경에서 기대대로 동작하는지 로컬 스모크 테스트가 필요하다.
-
-### 3. Native OpenCode plugin
-
-구현율: **60~70%**
+구현율: **70~80%**
 
 구현 파일:
 
@@ -146,7 +97,6 @@ OpenCode TUI 예시:
   - `session.created` → sessionID 획득
   - `session.next.model.switched` → native `/model` 전환 시 context 자동 주입
   - `session.next.agent.switched` → agent 추적
-  - `command.executed` → `/lc-*` 커맨드 감지, profile 매칭, context 주입
   - `message.updated` → user turn 생성, diff stats 캡처, turnLog 누적
   - `session.idle` → turn 저장
 - `client.session.prompt({ noReply: true, parts: [...] })` 기반 context-only injection
@@ -159,7 +109,7 @@ OpenCode TUI 예시:
 - TurnLog의 `request` 필드 (현재 user message text가 정확히 어디 있는지 spike 필요)
 - `.opencode/local-code.json` per-project config (profiles, options)
 
-### 4. Model profile mapping
+### 3. Model profile mapping
 
 구현율: **70~80%**
 
@@ -181,7 +131,7 @@ OpenCode TUI 예시:
 - repo-local 설정 파일로 외부화 (`.opencode/local-code.json`)
 - 사용자 커스텀 profile 지원
 
-### 5. turnLog / 작업 단위 추적
+### 4. turnLog / 작업 단위 추적
 
 구현율: **60~70%**
 
@@ -253,53 +203,24 @@ node bin/lc-opencode-context.js --cwd . --next-model opencode-go/deepseek-v4-pro
 - `git log -10 --oneline`
 - 승인 없는 push/merge/deploy/publish/release 금지 문구
 
-### 4. 다른 프로젝트에서 command MVP 테스트
+### 4. 실제 OpenCode에서 플러그인 테스트
 
-테스트하고 싶은 실제 OpenCode 작업 repo에서:
-
-```bash
-mkdir -p .opencode/commands
-cp /path/to/local-code-opencode-plugin/templates/opencode/commands/*.md .opencode/commands/
 ```
+.prodebug/opencode.json 에 plugin 등록 후 OpenCode 실행:
 
-그리고 `lc-opencode-context`가 PATH에 있어야 한다.
-간단히는 저장소에서 npm link를 사용할 수 있다.
-
-```bash
-cd /path/to/local-code-opencode-plugin
-npm link
+1. OpenCode TUI 안에서 평소처럼 작업
+2. /model 로 모델 전환
+3. 새 모델이 git handoff context를 받아 자연스럽게 이어서 작업하는지 확인
 ```
-
-그 다음 실제 작업 repo에서 OpenCode 실행:
-
-```bash
-opencode
-```
-
-TUI 안에서:
-
-```text
-/lc-deepseek 현재 상태 이어서 설명해줘
-/lc-qwen 현재 diff 기준으로 다음 구현 계획 세워줘
-/lc-review 현재 변경사항 리뷰해줘
-```
-
-확인할 것:
-
-- command가 OpenCode에 노출되는지
-- command 실행 시 에러 없이 shell injection이 동작하는지
-- 지정한 `model:`이 실제 응답 모델에 반영되는지
-- prompt 안에 git handoff context가 반영되는지
 
 ## 구현율 요약
 
 - Git context core: **80~90%**
 - CLI handoff generator: **80~90%**
-- OpenCode custom command bridge: **90~95%**
-- Native OpenCode plugin: **60~70%**
+- Native OpenCode plugin: **70~80%**
 - Model profiles: **70~80%**
 - turnLog: **60~70%**
-- 전체 최종 목표 기준: **65~70%**
+- 전체 최종 목표 기준: **70~75%**
 
 ## 다음 개발 순서 제안
 

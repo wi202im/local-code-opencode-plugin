@@ -2,7 +2,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { buildContextPayload } from "./context.js";
 import { renderModelHandoffPrompt } from "./handoff.js";
-import { DEFAULT_PROFILES, resolveProfile, splitModelID } from "./profiles.js";
+import { splitModelID } from "./profiles.js";
 
 const TURNS_FILE = ".opencode/local-code/turns.json";
 const TURN_LOG_MAX = 50;
@@ -98,24 +98,6 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
     "session.next.agent.switched": (input) => {
       const agent = input?.properties?.agent;
       if (agent) { currentAgent = agent; log("agent:", agent); }
-    },
-
-    "command.executed": async (input) => {
-      const props = input?.properties ?? {};
-      const name = props.name ?? "";
-      const sid = props.sessionID;
-      if (sid) sessionID = sid;
-      if (!name.startsWith("lc-")) return;
-
-      const profileName = name.slice(3);
-      log("custom command:", name);
-
-      try {
-        const profile = resolveProfile(profileName, DEFAULT_PROFILES);
-        await injectContext(profile.model);
-      } catch (err) {
-        log("unknown profile:", profileName, err?.message);
-      }
     },
 
     "message.updated": async (input) => {
