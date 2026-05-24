@@ -29,11 +29,11 @@ New model continues using git status/diff/log as source of truth
   - local-code style model handoff prompt rendering
   - sliding-window turnLog renderer
 - `src/plugin.js`
-  - OpenCode event hooks (session.created, session.next.model.switched, session.next.agent.switched, message.updated, session.idle)
+  - OpenCode event hooks (session.created, session.next.model.switched, session.next.agent.switched, message.part.updated, message.updated, session.idle)
   - TurnLog collection and persistence (`.opencode/local-code/turns.json`)
   - `noReply:true` context injection
 - `src/profiles.js`
-  - model profile definitions and utilities
+  - splitModelID utility
 
 ## Why event-driven plugin
 

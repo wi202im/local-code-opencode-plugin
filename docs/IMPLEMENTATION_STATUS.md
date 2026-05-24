@@ -6,7 +6,7 @@
 
 현재 저장소는 **OpenCode TUI 내부에서 native `/model` 전환 시 event hook으로 자동 git handoff context를 주입하는 native plugin**이 동작하는 상태다.
 
-대략적인 전체 구현율은 **80~85%** 수준으로 본다.
+대략적인 전체 구현율은 **85~90%** 수준으로 본다.
 
 ## 최종 목표
 
@@ -107,33 +107,7 @@ lc-opencode-context --cwd . --next-model anthropic/claude-sonnet-4-5
 - 방어 로직: repo 미발견 또는 모든 repo clean 상태 시 injection 스킵
 - Workspace detection: root가 git repo 아닐 때 단일 child repo도 인식
 
-아직 확정되지 않은 것:
-
-- `.opencode/local-code.json` per-project config (profiles, options)
-
-### 3. Model profile mapping
-
-구현율: **70~80%**
-
-구현 파일:
-
-- `src/profiles.js`
-
-현재 profile:
-
-- `codex` → `openai/gpt-5.3-codex` (primary coding)
-- `gpt55` → `openai/gpt-5.5-pro` (highest quality)
-- `deepseek` → `opencode-go/deepseek-v4-pro` (general)
-- `qwen` → `opencode-go/qwen3.6-plus` (cheap coding)
-- `kimi` → `opencode-go/kimi-k2.6` (long-context)
-- `review` → `opencode-go/deepseek-v4-pro` (plan agent)
-
-남은 것:
-
-- repo-local 설정 파일로 외부화 (`.opencode/local-code.json`)
-- 사용자 커스텀 profile 지원
-
-### 4. turnLog / 작업 단위 추적
+### 3. turnLog / 작업 단위 추적
 
 구현율: **80~85%**
 
@@ -157,14 +131,11 @@ lc-opencode-context --cwd . --next-model anthropic/claude-sonnet-4-5
 
 우선순위 높은 항목:
 
-1. **Per-project config**
-   - `.opencode/local-code.json` 으로 profiles, options 외부화
-
-2. **테스트 커버리지 확장**
+1. **테스트 커버리지 확장**
    - plugin 이벤트 핸들러 단위 테스트
    - handoff 렌더링 테스트
 
-3. **턴 간 git diff 정확도 개선**
+2. **턴 간 git diff 정확도 개선**
    - 도구 호출 전후 git diff 비교
 
 ## 로컬 테스트 가이드
@@ -220,9 +191,8 @@ node bin/lc-opencode-context.js --cwd . --next-model opencode-go/deepseek-v4-pro
 - Git context core: **80~90%**
 - CLI handoff generator: **80~90%**
 - Native OpenCode plugin: **80~85%**
-- Model profiles: **70~80%**
 - turnLog: **80~85%**
-- 전체 최종 목표 기준: **80~85%**
+- 전체 최종 목표 기준: **85~90%**
 
 ## 다음 개발 순서 제안
 
@@ -237,4 +207,4 @@ node bin/lc-opencode-context.js --cwd . --next-model opencode-go/deepseek-v4-pro
 
 Event payload shapes는 OpenCode 1.15.10 기준으로 검증되었고, `session.next.model.switched` 기반 context injection과 turnLog persistence가 구현되어 있다.
 
-남은 주요 작업은 per-project config 지원과 테스트 커버리지 확장이다.
+남은 주요 작업은 테스트 커버리지 확장이다.

@@ -38,7 +38,6 @@ OpenCode TUI
 
 아직 작업 필요:
 
-- `.opencode/local-code.json` per-project config
 - Plugin 이벤트 핸들러 유닛 테스트
 
 ## 사용법
