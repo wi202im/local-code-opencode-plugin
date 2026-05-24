@@ -66,8 +66,18 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
       return;
     }
     const payload = await buildContextPayload({ cwd: root, previousModel: currentModel, nextModel });
-    if (turns.length) payload.turnLog = turns;
 
+    const hasRelevantChanges = payload.repoStates.some(
+      (s) => s.status || s.diffStat
+    );
+    if (!payload.repos.length || !hasRelevantChanges) {
+      if (!payload.repos.length) log("no repos found, skipping injection");
+      else log("no changes detected, skipping injection");
+      currentModel = nextModel;
+      return;
+    }
+
+    if (turns.length) payload.turnLog = turns;
     const text = renderModelHandoffPrompt(payload);
     try {
       await client.session.prompt({
