@@ -6,6 +6,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { buildContextPayload, detectWorkspaceRepos } from "../src/context.js";
 import { renderModelHandoffPrompt } from "../src/handoff.js";
+import { splitModelID } from "../src/profiles.js";
 
 test("detects a single git repo and renders handoff", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lc-opencode-"));
@@ -57,6 +58,121 @@ test("does not treat normal child directories of a repo as workspace repos", asy
   const repos = await detectWorkspaceRepos(root);
   assert.equal(repos.length, 1);
   assert.equal(repos[0].path, root);
+});
+
+function makePayload(overrides = {}) {
+  return {
+    kind: "local-code-opencode-model-handoff",
+    generatedAt: new Date().toISOString(),
+    workspaceRoot: "/tmp/test",
+    previousModel: "old/test",
+    nextModel: "new/test",
+    repos: [{ name: "test", path: "/tmp/test" }],
+    repoStates: [{
+      repo: { name: "test", path: "/tmp/test" },
+      status: "M README.md",
+      diffStat: "README.md | 2 +-",
+      log: "abc1234 init",
+    }],
+    turnLog: [],
+    ...overrides,
+  };
+}
+
+function makeTurn(i, overrides = {}) {
+  return {
+    model: "test/model",
+    agent: "build",
+    request: `turn ${i} request`,
+    diffStats: [],
+    createdAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+test("handoff shows unknown request when no request text captured", () => {
+  const turn = makeTurn(1, { request: undefined });
+  const payload = makePayload({ turnLog: [turn] });
+  const rendered = renderModelHandoffPrompt(payload);
+  assert.match(rendered, /unknown request/);
+});
+
+test("handoff shows captured request text", () => {
+  const turn = makeTurn(1, { request: "README 업데이트해줘" });
+  const payload = makePayload({ turnLog: [turn] });
+  const rendered = renderModelHandoffPrompt(payload);
+  assert.match(rendered, /README 업데이트해줘/);
+});
+
+test("handoff sliding window for <= 10 turns shows all", () => {
+  const turns = Array.from({ length: 8 }, (_, i) => makeTurn(i + 1));
+  const payload = makePayload({ turnLog: turns });
+  const rendered = renderModelHandoffPrompt(payload);
+  assert.match(rendered, /총 8개/);
+  assert.doesNotMatch(rendered, /중간.*생략/);
+});
+
+test("handoff sliding window for > 10 turns shows first 3 + last 7", () => {
+  const turns = Array.from({ length: 20 }, (_, i) => makeTurn(i + 1));
+  const payload = makePayload({ turnLog: turns });
+  const rendered = renderModelHandoffPrompt(payload);
+  assert.match(rendered, /처음 3 \+ 최근 7/);
+  assert.match(rendered, /중간 10개 turn 생략/);
+});
+
+test("handoff with no repos shows fallback message", () => {
+  const payload = makePayload({ repos: [], repoStates: [] });
+  const rendered = renderModelHandoffPrompt(payload);
+  assert.match(rendered, /git repo를 찾지 못했습니다/);
+  assert.match(rendered, /등록된 repos:/);
+});
+
+test("handoff with clean repo shows clean state", () => {
+  const payload = makePayload({
+    repoStates: [{
+      repo: { name: "test", path: "/tmp/test" },
+      status: "",
+      diffStat: "",
+      log: "",
+    }],
+  });
+  const rendered = renderModelHandoffPrompt(payload);
+  assert.match(rendered, /\(clean\)/);
+  assert.match(rendered, /\(no diff\)/);
+  assert.match(rendered, /\(no commits\)/);
+});
+
+test("handoff with multiple repos renders all", () => {
+  const payload = makePayload({
+    repos: [
+      { name: "api", path: "/tmp/api" },
+      { name: "web", path: "/tmp/web" },
+    ],
+    repoStates: [
+      { repo: { name: "api", path: "/tmp/api" }, status: "M api.js", diffStat: "api.js | 3 +++", log: "abc fix" },
+      { repo: { name: "web", path: "/tmp/web" }, status: "M app.js", diffStat: "app.js | 5 +--", log: "def feat" },
+    ],
+  });
+  const rendered = renderModelHandoffPrompt(payload);
+  assert.match(rendered, /api.*\/tmp\/api/);
+  assert.match(rendered, /web.*\/tmp\/web/);
+  assert.match(rendered, /api\.js \| 3/);
+  assert.match(rendered, /app\.js \| 5/);
+});
+
+test("splitModelID splits provider/model", () => {
+  assert.deepEqual(splitModelID("openai/gpt-5.3-codex"), { providerID: "openai", modelID: "gpt-5.3-codex" });
+  assert.deepEqual(splitModelID("opencode-go/deepseek-v4-pro"), { providerID: "opencode-go", modelID: "deepseek-v4-pro" });
+});
+
+test("splitModelID handles no slash", () => {
+  assert.deepEqual(splitModelID("gpt-5"), { providerID: "", modelID: "gpt-5" });
+});
+
+test("handoff includes safety clause", () => {
+  const payload = makePayload();
+  const rendered = renderModelHandoffPrompt(payload);
+  assert.match(rendered, /push.*merge.*deploy.*publish.*release/);
 });
 
 function git(cwd, args) {
