@@ -186,10 +186,6 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
   return {
     event: async ({ event }) => {
       const { type, properties } = event ?? {};
-
-      // TEMP: log every event
-      console.error("[lc-event]", type || "no-type");
-
       if (!type) return;
 
       if (type === "session.created") {
