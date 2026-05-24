@@ -1,21 +1,31 @@
 export const DEFAULT_PROFILES = {
-  sonnet: {
-    model: "anthropic/claude-sonnet-4-5",
+  codex: {
+    model: "openai/gpt-5.3-codex",
     agent: "build",
-    description: "main implementation model",
+    description: "primary coding model",
+  },
+  gpt55: {
+    model: "openai/gpt-5.5-pro",
+    agent: "build",
+    description: "highest quality model",
+  },
+  deepseek: {
+    model: "opencode-go/deepseek-v4-pro",
+    agent: "build",
+    description: "cheap general model",
   },
   qwen: {
-    model: "openrouter/qwen/qwen3-coder",
+    model: "opencode-go/qwen3.6-plus",
     agent: "build",
     description: "cheap coding model",
   },
   kimi: {
-    model: "openrouter/moonshotai/kimi-k2",
+    model: "opencode-go/kimi-k2.6",
     agent: "build",
-    description: "cheap long-context/debug model",
+    description: "long-context model",
   },
   review: {
-    model: "anthropic/claude-sonnet-4-5",
+    model: "opencode-go/deepseek-v4-pro",
     agent: "plan",
     description: "read-only review mode",
   },

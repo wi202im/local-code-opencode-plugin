@@ -1,85 +1,69 @@
 # OpenCode Plugin Spikes
 
-## Spike 1 — Event payload map
+## Spike 1 — Event payload map ✅ VERIFIED (2026-05-23)
 
-Run OpenCode with:
+Run OpenCode with the `event-spike.js` plugin in `.opencode/plugins/`:
 
 ```bash
-LOCAL_CODE_OPENCODE_DEBUG=1 opencode
+opencode .
 ```
 
-Actions to perform:
+The spike plugin writes all events to `.opencode/local-code/spike-logs/`.
 
-1. Send a normal message.
-2. Wait for session idle.
-3. Run `/models` and select another model.
-4. Run `/lc-model sonnet`.
-5. Run a custom command with `model:` frontmatter.
+### Verified event payload shapes (OpenCode 1.15.10)
 
-Record:
+| Event | Key fields |
+|---|---|
+| `session.created` | `properties.info.id` (sessionID), `properties.info.directory`, `properties.info.title` |
+| `session.next.model.switched` | `properties.model.id`, `properties.model.providerID`, `properties.model.variant`, `properties.sessionID` |
+| `session.next.agent.switched` | `properties.agent`, `properties.sessionID` |
+| `command.executed` | `properties.name` (e.g. "lc-deepseek"), `properties.sessionID`, `properties.arguments`, `properties.messageID` |
+| `message.updated` | `properties.info.role`, `properties.info.model.{providerID,modelID}`, `properties.info.agent`, `properties.info.id`, `properties.sessionID` |
+| `session.idle` | `properties.sessionID` |
+| `session.diff` | (fires after file edits, payload large — raw snapshots) |
+| `session.status` | session status transitions |
+| `session.updated` | session metadata updates |
+| `message.part.delta` | streaming text deltas (very high volume, filtered in spike) |
+| `tool.execute.before` | `tool` name + args |
+| `tool.execute.after` | `tool` name + result |
+| `todo.updated` | todo list state |
+| `file.watcher.updated` | filesystem change detected |
 
-- event type
-- payload keys
-- session id location
-- model fields, if present
+### Session ID acquisition paths
+
+1. `session.created` → `properties.info.id`
+2. `command.executed` → `properties.sessionID`
+3. `message.updated` → `properties.sessionID`
+4. `session.idle` → `properties.sessionID`
 
 ## Spike 2 — noReply context injection
 
-Goal: verify context-only injection affects the next answer.
+Need to verify in TUI with the updated `src/plugin.js`:
 
-Candidate call:
+1. Restart OpenCode, run a few turns
+2. Execute `/lc-deepseek describe current project state`
+3. Verify the new model received the handoff context
 
-```ts
+The injection call:
+
+```js
 await client.session.prompt({
   path: { id: sessionID },
-  body: {
-    noReply: true,
-    parts: [{ type: "text", text: "Remember marker LC_CONTEXT_SPIKE_OK" }],
-  },
+  body: { noReply: true, parts: [{ type: "text", text: handoffPrompt }] },
 })
 ```
 
-Then ask in TUI:
+## Spike 3 — model state update (NOT needed for custom commands)
 
-```text
-What marker did the plugin inject?
-```
+Custom command templates use `model:` frontmatter — OpenCode handles model switching automatically. Shell injection (`!\`lc-opencode-context ...\``) injects context into the prompt.
 
-Expected: model mentions `LC_CONTEXT_SPIKE_OK`.
-
-## Spike 3 — model state update
-
-Try in order:
-
-1. `client.config.update({ body: { model } })`
-2. `client.session.prompt({ body: { model, parts } })`
-3. command frontmatter `model:`
-4. native `/models` event-driven injection
-
-Success criteria:
-
-- TUI status shows the new model, or
-- next assistant response definitely uses the requested model, and
-- context injection survives the switch.
+For native `/model` switches, the plugin hooks `session.next.model.switched` to auto-inject context without needing to call `client.config.update()`.
 
 ## Spike 4 — turnLog reconstruction
 
-Candidate tracking:
-
-- pre snapshot on user `message.updated`
-- post diff on `session.idle`
-- fallback to accumulated git state if snapshot is missing
-
-Turn record shape:
-
-```js
-{
-  request,
-  model,
-  agent,
-  diffStats,
-  createdAt
-}
-```
-
-Keep cache session-local and bounded. Do not make transcript the durable source of truth.
+Verified approach:
+- `message.updated` (role=user) → capture model/agent info, append to turnLog
+- `session.idle` → mark turn complete
+- TurnLog tracks: `{ request, model, agent, diffStats, createdAt }`
+- Sliding window rendering: first 3 + last 7 turns (implemented in `handoff.js`)
+- Per-turn git diff is deferred — file changes are captured by live `git status`/`git diff --stat` at handoff time
