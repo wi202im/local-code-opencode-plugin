@@ -1,8 +1,9 @@
 {
   "name": "local-code-opencode-plugin",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Inject git-based handoff context when switching models in OpenCode.",
   "type": "module",
+  "main": "./src/plugin.js",
   "bin": {
     "lc-opencode-context": "bin/lc-opencode-context.js"
   },
@@ -15,6 +16,7 @@
   ],
   "exports": {
     ".": "./src/plugin.js",
+    "./server": "./src/plugin.js",
     "./context": "./src/context.js",
     "./handoff": "./src/handoff.js"
   },

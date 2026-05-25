@@ -71,6 +71,29 @@ opencode.json
 
 OpenCode installs npm plugins automatically on startup and caches them under its cache directory.
 
+### Updating From an Older Cached Version
+
+OpenCode caches npm plugins under a path like:
+
+```text
+~/.cache/opencode/packages/local-code-opencode-plugin@latest
+```
+
+On a fresh machine, `"local-code-opencode-plugin"` installs the current npm `latest` version automatically. If OpenCode has already cached an older version, it may keep using that cached package. To force a refresh, remove the cached package directory and restart OpenCode:
+
+```bash
+rm -rf ~/.cache/opencode/packages/local-code-opencode-plugin@latest
+```
+
+Alternatively, pin the version in your OpenCode config:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["local-code-opencode-plugin@1.0.1"]
+}
+```
+
 ## Usage
 
 1. Start OpenCode in a git repository.
