@@ -37,9 +37,43 @@ OpenCode TUI
   - Uses a sliding turn-log window: first 3 turns plus latest 7 turns
   - Skips injection when no repository is found or every repository is clean
 
+## Installation
+
+Add the npm package to your OpenCode config.
+
+Global install is recommended if you want model handoff context in every repository:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["local-code-opencode-plugin"]
+}
+```
+
+Put that in:
+
+```text
+~/.config/opencode/opencode.json
+```
+
+Project-level install is better when you only want this behavior in one workspace:
+
+```text
+opencode.json
+```
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["local-code-opencode-plugin"]
+}
+```
+
+OpenCode installs npm plugins automatically on startup and caches them under its cache directory.
+
 ## Usage
 
-1. Register `src/plugin.js` as an OpenCode plugin.
+1. Start OpenCode in a git repository.
 2. Work normally inside the OpenCode TUI.
 3. Switch models with the native `/models` picker.
 4. The plugin injects git handoff context into the active session.
