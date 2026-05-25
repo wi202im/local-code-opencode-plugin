@@ -1,59 +1,50 @@
-# local-code-opencode-plugin v.1.0.0
+# local-code-opencode-plugin
 
-OpenCode TUI 안에서 모델을 바꿀 때, 기존 `local-code`의 핵심 아이디어인 **git 상태 기반 handoff context**를 새 모델 문맥으로 주입하는 플러그인이다.
+An OpenCode plugin that injects git-based handoff context when you switch models in the OpenCode TUI.
 
-## 목표
+The core idea is simple: when a model handoff happens, the next model should inherit the current repository state, not rely only on the chat transcript.
+
+## What It Does
 
 ```text
 OpenCode TUI
-  ├─ 평소 작업: OpenCode가 그대로 처리
-  ├─ 모델 전환: native /models picker
-  ├─ 직접 입력: /model provider/model 형태도 handoff trigger로 감지
-  └─ 전환 시점:
-        1. 현재 workspace/repo git 상태 수집
-        2. local-code 스타일 handoff prompt 생성
-        3. 현재 OpenCode session에 context-only(noReply) 주입
-        4. 새 모델이 이어서 작업
+  |-- Normal work: OpenCode behaves as usual
+  |-- Model switch: native /models picker
+  |-- Direct input: /model provider/model is handled as a handoff trigger fallback
+  `-- On switch:
+        1. Collect current workspace/repo git state
+        2. Render a local-code style handoff prompt
+        3. Inject it into the current OpenCode session as a noReply context message
+        4. Let the next model continue with git status/diff/log as context
 ```
 
-## 현재 구현
-
-구현됨:
+## Current Features
 
 - `lc-opencode-context` CLI
-  - workspace/단일 repo 자동 감지
-  - immediate child git repo가 2개 이상이면 multi-repo workspace로 처리
-  - root가 git repo 아닐 때 단일 child repo도 인식
-  - repo별 `git status --short`, `git diff --stat`, `git log -10 --oneline` 수집
-  - handoff prompt 출력
+  - Detects a single git repository or a multi-repo workspace
+  - Treats two or more immediate child git repositories as a workspace
+  - Detects one child repository when the root itself is not a git repository
+  - Collects `git status --short`, `git diff --stat`, and `git log -10 --oneline`
+  - Renders a handoff prompt
 - OpenCode native plugin (`src/plugin.js`)
-  - `session.created` → sessionID 획득
-  - `session.next.model.switched` → native `/models` picker 전환 시 context 자동 주입
-  - 직접 입력 `/model provider/model` → user text event로 감지해 context 주입
-  - injected handoff와 직접 `/model` command가 turnLog에 남지 않도록 필터링
-  - 직접 `/model` command 뒤 OpenCode가 내보내는 stale model event를 무시
-  - `session.next.agent.switched` → agent 추적
-  - `message.part.updated` → user message text 캡처, request 매칭
-  - `message.updated` → user turn 생성, 시작 시점 git diff snapshot 캡처, turnLog 누적
-  - `session.idle` → 종료 시점 git diff snapshot 비교 후 turn 저장
-  - TurnLog persistence: `.opencode/local-code/turns.json` (최대 50개)
-  - Per-turn diff stats: staged/unstaged tracked 변경과 untracked 파일을 git snapshot 비교로 기록
-  - Sliding window 렌더링: 처음 3 + 최근 7개 turn
-  - 방어 로직: repo 미발견 또는 변경사항 없을 시 injection 스킵
+  - Tracks `session.created`, `session.updated`, `session.next.model.switched`, `session.next.agent.switched`, `message.part.updated`, `message.updated`, and `session.idle`
+  - Automatically injects context on native `/models` picker switches
+  - Treats direct `/model provider/model` text input as a handoff trigger fallback
+  - Filters injected handoff messages and direct `/model` commands out of the turn log
+  - Guards against stale model events after direct command fallback handling
+  - Captures per-turn git diff snapshots at user-turn start and session idle
+  - Persists bounded turn history to `.opencode/local-code/turns.json`
+  - Uses a sliding turn-log window: first 3 turns plus latest 7 turns
+  - Skips injection when no repository is found or every repository is clean
 
-아직 작업 필요:
+## Usage
 
-- `.opencode/local-code.json` 같은 per-project config 지원
-- 실제 OpenCode 장시간 smoke test
+1. Register `src/plugin.js` as an OpenCode plugin.
+2. Work normally inside the OpenCode TUI.
+3. Switch models with the native `/models` picker.
+4. The plugin injects git handoff context into the active session.
 
-## 사용법
-
-1. `plugin.js`를 OpenCode 플러그인으로 등록한다.
-2. OpenCode TUI 안에서 평소처럼 작업한다.
-3. `/models` picker로 모델을 전환하면 플러그인이 자동으로 git handoff context를 새 모델에 주입한다.
-4. 채팅창에 `/model provider/model`처럼 직접 입력해도 handoff context 주입을 트리거한다.
-
-OpenCode 1.15.10 기준으로 직접 입력 `/model provider/model`은 native 모델 전환 명령이 아니라 일반 user message로 들어온다. 그래서 플러그인은 이 경로를 `message.part.updated`/`message.updated`에서 감지해 handoff를 주입하고, 해당 command가 turnLog에 남지 않도록 처리한다. 실제 모델 선택 자체는 OpenCode의 native `/models` picker가 가장 정확한 경로다.
+Direct chat input such as `/model provider/model` is also detected as a handoff trigger fallback. As of OpenCode 1.15.10, this text path is not a native model switch command; it arrives as a normal user message. The plugin detects that shape through text events, injects context, and prevents the command from being stored as a normal work turn. For actual model selection, the native `/models` picker remains the preferred path.
 
 ## CLI
 
@@ -61,39 +52,39 @@ OpenCode 1.15.10 기준으로 직접 입력 `/model provider/model`은 native �
 lc-opencode-context --cwd . --previous-model openai/gpt-5.3-codex --next-model opencode-go/deepseek-v4-pro
 ```
 
-출력 예:
+Example output:
 
 ```text
 [Local-code model handoff]
 
-이전 모델: openai/gpt-5.3-codex
-새 모델: opencode-go/deepseek-v4-pro
+Previous model: openai/gpt-5.3-codex
+Next model: opencode-go/deepseek-v4-pro
 
-현재 git 상태와 작업 단위를 source of truth로 삼아 이어가세요.
-사용자 승인 없이 push, merge, deploy, publish, release하지 마세요.
+Use the current git state and work units only when they are relevant.
+Do not push, merge, deploy, publish, or release without explicit user approval.
 ...
 ```
 
-## 설계 원칙
+## Design Principles
 
-- 대화 transcript보다 repo state를 우선한다.
-- 플러그인은 모델 전환 순간에만 개입한다.
-- 기본 동작은 OpenCode TUI를 방해하지 않는다.
-- 자동 commit/push/merge/deploy/release는 하지 않는다.
-- multi-repo workspace는 immediate child git repo 2개 이상일 때만 자동 감지한다.
-- OpenCode event 기반 turnLog는 캐시 수준으로만 다루고, durable source of truth는 git 상태로 둔다.
+- Git state is the durable source of truth.
+- Chat transcript and turn history are supporting context, not durable state.
+- The plugin only intervenes at model handoff boundaries.
+- Normal OpenCode TUI behavior should remain intact.
+- The handoff prompt always includes a safety reminder against unapproved push, merge, deploy, publish, or release operations.
+- Multi-repo workspace detection is intentionally conservative: it only treats immediate child git repositories as workspace members.
 
-## 개발
+## Development
 
 ```bash
 npm test
 npm run check
 ```
 
-테스트는 `test/context.test.js`, `test/handoff.test.js`, `test/plugin.test.js`, `test/profiles.test.js`로 나뉘어 있다.
+The test suite is split across `test/context.test.js`, `test/handoff.test.js`, `test/plugin.test.js`, and `test/profiles.test.js`.
 
-## 문서
+## Documentation
 
-- `docs/IMPLEMENTATION_STATUS.md` — 현재 구현 범위, 구현율, 최종 목표, 로컬 테스트 가이드
-- `docs/ARCHITECTURE.md` — 최종 plugin 구조
-- `docs/SPIKES.md` — OpenCode plugin에서 검증할 항목
+- `docs/IMPLEMENTATION_STATUS.md` - current implementation scope, test status, and release readiness notes
+- `docs/ARCHITECTURE.md` - plugin architecture and event-driven design
+- `docs/SPIKES.md` - OpenCode event and integration spikes

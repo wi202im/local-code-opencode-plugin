@@ -130,7 +130,7 @@ async function collectRepoDiffSnapshot(repo) {
   for (const [file, signature] of signatures) {
     files[file] = {
       signature,
-      diffStat: diffStats.get(file) ?? "(변경 있음)",
+      diffStat: diffStats.get(file) ?? "(changed)",
     };
   }
   return { repo, files };
@@ -164,7 +164,7 @@ function formatSnapshotFile(repo, file, diffStat, multiRepo) {
   return {
     name: path.basename(file) || file,
     path: renderedPath,
-    diffStat: diffStat || "(변경 없음)",
+    diffStat: diffStat || "(no changes)",
   };
 }
 

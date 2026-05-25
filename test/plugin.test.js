@@ -125,7 +125,7 @@ test("plugin handles direct /model command without persisting it as a turn", asy
 
   assert.equal(prompts.length, 1);
   const handoff = prompts[0].body.parts[0].text;
-  assert.match(handoff, /새 모델: opencode-go\/deepseek-v4-pro/);
+  assert.match(handoff, /Next model: opencode-go\/deepseek-v4-pro/);
   assert.match(handoff, /README\.md/);
 
   const turns = JSON.parse(await readFile(path.join(dir, ".opencode/local-code/turns.json"), "utf-8"));
@@ -612,8 +612,8 @@ test("plugin does not let direct /model stale guard block a real later model swi
   });
 
   assert.equal(prompts.length, 2);
-  assert.match(prompts[0].body.parts[0].text, /새 모델: opencode-go\/deepseek-v4-pro/);
-  assert.match(prompts[1].body.parts[0].text, /새 모델: anthropic\/claude-sonnet-4-5/);
+  assert.match(prompts[0].body.parts[0].text, /Next model: opencode-go\/deepseek-v4-pro/);
+  assert.match(prompts[1].body.parts[0].text, /Next model: anthropic\/claude-sonnet-4-5/);
 });
 
 test("plugin keeps direct /model stale guard through empty injected placeholders", async () => {
@@ -656,7 +656,7 @@ test("plugin keeps direct /model stale guard through empty injected placeholders
   await plugin.event({ event: { type: "session.updated", properties: { info: { model: { providerID: "openai", modelID: "gpt-5.5" } } } } });
 
   assert.equal(prompts.length, 1);
-  assert.match(prompts[0].body.parts[0].text, /새 모델: opencode-go\/deepseek-v4-pro/);
+  assert.match(prompts[0].body.parts[0].text, /Next model: opencode-go\/deepseek-v4-pro/);
 });
 
 test("plugin clears direct /model stale guard when real user text arrives late", async () => {
@@ -736,8 +736,8 @@ test("plugin clears direct /model stale guard when real user text arrives late",
   });
 
   assert.equal(prompts.length, 2);
-  assert.match(prompts[0].body.parts[0].text, /새 모델: opencode-go\/deepseek-v4-pro/);
-  assert.match(prompts[1].body.parts[0].text, /새 모델: anthropic\/claude-sonnet-4-5/);
+  assert.match(prompts[0].body.parts[0].text, /Next model: opencode-go\/deepseek-v4-pro/);
+  assert.match(prompts[1].body.parts[0].text, /Next model: anthropic\/claude-sonnet-4-5/);
 });
 
 test("plugin preserves context across A to B to A to B model switches", async () => {
@@ -781,12 +781,12 @@ test("plugin preserves context across A to B to A to B model switches", async ()
   });
 
   assert.equal(prompts.length, 3);
-  assert.match(prompts[0].body.parts[0].text, /이전 모델: openai\/gpt-5\.5/);
-  assert.match(prompts[0].body.parts[0].text, /새 모델: anthropic\/claude-sonnet-4-5/);
-  assert.match(prompts[1].body.parts[0].text, /이전 모델: anthropic\/claude-sonnet-4-5/);
-  assert.match(prompts[1].body.parts[0].text, /새 모델: openai\/gpt-5\.5/);
-  assert.match(prompts[2].body.parts[0].text, /이전 모델: openai\/gpt-5\.5/);
-  assert.match(prompts[2].body.parts[0].text, /새 모델: anthropic\/claude-sonnet-4-5/);
+  assert.match(prompts[0].body.parts[0].text, /Previous model: openai\/gpt-5\.5/);
+  assert.match(prompts[0].body.parts[0].text, /Next model: anthropic\/claude-sonnet-4-5/);
+  assert.match(prompts[1].body.parts[0].text, /Previous model: anthropic\/claude-sonnet-4-5/);
+  assert.match(prompts[1].body.parts[0].text, /Next model: openai\/gpt-5\.5/);
+  assert.match(prompts[2].body.parts[0].text, /Previous model: openai\/gpt-5\.5/);
+  assert.match(prompts[2].body.parts[0].text, /Next model: anthropic\/claude-sonnet-4-5/);
 
   const turns = JSON.parse(await readFile(path.join(dir, ".opencode/local-code/turns.json"), "utf-8"));
   assert.deepEqual(turns.map((turn) => turn.model), [
@@ -1080,7 +1080,7 @@ test("plugin injects on continued-session model switch using event sessionID", a
 
   assert.equal(prompts.length, 1);
   const handoff = prompts[0].body.parts[0].text;
-  assert.match(handoff, /이전 모델: openai\/gpt-5\.3-codex/);
-  assert.match(handoff, /새 모델: openai\/gpt-5\.4-mini/);
+  assert.match(handoff, /Previous model: openai\/gpt-5\.3-codex/);
+  assert.match(handoff, /Next model: openai\/gpt-5\.4-mini/);
   assert.deepEqual(prompts[0].path, { id: "ses_continued" });
 });

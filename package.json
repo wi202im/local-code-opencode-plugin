@@ -6,6 +6,13 @@
   "bin": {
     "lc-opencode-context": "bin/lc-opencode-context.js"
   },
+  "files": [
+    "bin/",
+    "docs/",
+    "src/",
+    "LICENSE",
+    "README.md"
+  ],
   "exports": {
     ".": "./src/plugin.js",
     "./context": "./src/context.js",

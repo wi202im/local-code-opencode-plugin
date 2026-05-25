@@ -35,8 +35,8 @@ function makeTurn(i, overrides = {}) {
 test("renders handoff header, model transition, and git sections", () => {
   const rendered = renderModelHandoffPrompt(makePayload());
   assert.match(rendered, /Local-code model handoff/);
-  assert.match(rendered, /이전 모델: old\/test/);
-  assert.match(rendered, /새 모델: new\/test/);
+  assert.match(rendered, /Previous model: old\/test/);
+  assert.match(rendered, /Next model: new\/test/);
   assert.match(rendered, /git status/);
 });
 
@@ -55,21 +55,21 @@ test("handoff shows captured request text", () => {
 test("handoff sliding window for <= 10 turns shows all", () => {
   const turns = Array.from({ length: 8 }, (_, i) => makeTurn(i + 1));
   const rendered = renderModelHandoffPrompt(makePayload({ turnLog: turns }));
-  assert.match(rendered, /총 8개/);
-  assert.doesNotMatch(rendered, /중간.*생략/);
+  assert.match(rendered, /8 total/);
+  assert.doesNotMatch(rendered, /middle.*omitted/);
 });
 
 test("handoff sliding window for > 10 turns shows first 3 + last 7", () => {
   const turns = Array.from({ length: 20 }, (_, i) => makeTurn(i + 1));
   const rendered = renderModelHandoffPrompt(makePayload({ turnLog: turns }));
-  assert.match(rendered, /처음 3 \+ 최근 7/);
-  assert.match(rendered, /중간 10개 turn 생략/);
+  assert.match(rendered, /first 3 \+ latest 7/);
+  assert.match(rendered, /10 middle turns omitted/);
 });
 
 test("handoff with no repos shows fallback message", () => {
   const rendered = renderModelHandoffPrompt(makePayload({ repos: [], repoStates: [] }));
-  assert.match(rendered, /git repo를 찾지 못했습니다/);
-  assert.match(rendered, /등록된 repos:/);
+  assert.match(rendered, /no git repositories found/);
+  assert.match(rendered, /Registered repos:/);
 });
 
 test("handoff with clean repo shows clean state", () => {
@@ -110,8 +110,8 @@ test("handoff includes safety clause", () => {
 
 test("handoff tells the next model that the user prompt has priority", () => {
   const rendered = renderModelHandoffPrompt(makePayload());
-  assert.match(rendered, /배경 컨텍스트/);
-  assert.match(rendered, /handoff 자체에 답하지 마세요/);
-  assert.match(rendered, /다음 사용자 메시지.*최우선/);
-  assert.match(rendered, /사용자 메시지가 우선/);
+  assert.match(rendered, /background context/);
+  assert.match(rendered, /Do not answer this handoff message directly/);
+  assert.match(rendered, /next user message.*follow that user message first/);
+  assert.match(rendered, /user message wins/);
 });

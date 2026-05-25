@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readdirSync, statSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, readdirSync, statSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 
 const execFileAsync = execFileSync;
@@ -10,6 +10,8 @@ const DIRECT_MODEL_RE = /^\/model\s+([^\s/]+\/[^\s]+)\s*$/;
 const DEFAULT_HEAD_KEEP = 3;
 const DEFAULT_TAIL_KEEP = 7;
 const INTERNAL_DIFF_PATH_PREFIX = ".opencode/local-code/";
+const HASH_OBJECT_CHUNK_SIZE = 100;
+const malformedTurnsBackups = new Set();
 
 const DEBUG = process.env.LOCAL_CODE_OPENCODE_DEBUG === "1";
 const log = (...args) => DEBUG && console.error("[lc-plugin]", ...args);
@@ -84,11 +86,15 @@ function collectRepoDiffSnapshot(repo) {
   const nameStatus = git(repo.path, ["diff", "HEAD", "--name-status"]);
   const untracked = git(repo.path, ["ls-files", "--others", "--exclude-standard"]);
   const signatures = new Map();
+  const diffStats = new Map();
 
   for (const line of numstat.split("\n").filter(Boolean)) {
     const parts = line.split("\t");
     const file = parts.at(-1);
-    if (file && !isInternalDiffPath(file)) signatures.set(file, line);
+    if (file && !isInternalDiffPath(file)) {
+      signatures.set(file, line);
+      diffStats.set(file, formatNumstatLine(file, parts));
+    }
   }
 
   for (const line of nameStatus.split("\n").filter(Boolean)) {
@@ -97,22 +103,45 @@ function collectRepoDiffSnapshot(repo) {
     if (file && !isInternalDiffPath(file)) signatures.set(file, `${signatures.get(file) ?? ""}|${line}`);
   }
 
-  for (const file of untracked.split("\n").filter(Boolean)) {
-    if (isInternalDiffPath(file)) continue;
-    const hash = git(repo.path, ["hash-object", "--", file]);
+  const untrackedFiles = untracked.split("\n").filter((file) => file && !isInternalDiffPath(file));
+  const untrackedHashes = hashFiles(repo.path, untrackedFiles);
+  for (const file of untrackedFiles) {
+    const hash = untrackedHashes.get(file) ?? "";
     signatures.set(file, `untracked:${file}:${hash}`);
+    diffStats.set(file, "(untracked file)");
   }
 
   const files = {};
   for (const [file, signature] of signatures) {
     files[file] = {
       signature,
-      diffStat: signature.startsWith("untracked:")
-        ? "(untracked file)"
-        : git(repo.path, ["diff", "HEAD", "--stat", "--", file]),
+      diffStat: diffStats.get(file) ?? "(changed)",
     };
   }
   return { repo, files };
+}
+
+function formatNumstatLine(file, parts) {
+  const [added, deleted] = parts;
+  if (!added || !deleted) return file;
+  if (added === "-" || deleted === "-") return `${file} | binary changed`;
+  const addedCount = Number(added);
+  const deletedCount = Number(deleted);
+  const total = addedCount + deletedCount;
+  const markers = `${"+".repeat(Math.min(addedCount, 20))}${"-".repeat(Math.min(deletedCount, 20))}`;
+  return `${file} | ${total} ${markers} (+${added} -${deleted})`;
+}
+
+function hashFiles(cwd, files) {
+  if (!files.length) return new Map();
+  const entries = [];
+  for (let index = 0; index < files.length; index += HASH_OBJECT_CHUNK_SIZE) {
+    const chunk = files.slice(index, index + HASH_OBJECT_CHUNK_SIZE);
+    const output = git(cwd, ["hash-object", "--", ...chunk]);
+    const hashes = output.split("\n").filter(Boolean);
+    entries.push(...chunk.map((file, chunkIndex) => [file, hashes[chunkIndex] ?? ""]));
+  }
+  return new Map(entries);
 }
 
 function formatSnapshotFile(repo, file, diffStat, multiRepo) {
@@ -120,12 +149,12 @@ function formatSnapshotFile(repo, file, diffStat, multiRepo) {
   return {
     name: path.basename(file) || file,
     path: renderedPath,
-    diffStat: diffStat || "(변경 없음)",
+    diffStat: diffStat || "(no changes)",
   };
 }
 
 function isInternalDiffPath(file) {
-  return file === ".opencode/local-code" || file.startsWith(INTERNAL_DIFF_PATH_PREFIX);
+  return typeof file === "string" && (file === ".opencode/local-code" || file.startsWith(INTERNAL_DIFF_PATH_PREFIX));
 }
 
 function hasDotGit(dir) {
@@ -134,12 +163,17 @@ function hasDotGit(dir) {
 
 function isGitRepo(dir) {
   if (hasDotGit(dir)) return true;
-  const result = git(dir, ["rev-parse", "--show-toplevel"]);
+  const result = git(dir, ["rev-parse", "--show-toplevel"], { silent: true });
   return path.resolve(result.trim()) === path.resolve(dir);
 }
 
-function git(cwd, args) {
-  try { return execFileSync("git", args, { cwd, maxBuffer: 1024 * 1024, encoding: "utf-8" }).trim(); } catch { return ""; }
+function git(cwd, args, { silent = false } = {}) {
+  try {
+    return execFileSync("git", args, { cwd, maxBuffer: 1024 * 1024, encoding: "utf-8" }).trim();
+  } catch (err) {
+    if (!silent) log("git failed:", args.join(" "), err?.message);
+    return "";
+  }
 }
 
 // ── handoff ──
@@ -151,16 +185,16 @@ function renderModelHandoffPrompt(payload, options = {}) {
   const { headerLabel, workUnitsBlock } = formatWorkUnits(turnLog, { headKeep, tailKeep });
   return [
     "[Local-code model handoff]", "",
-    "이 메시지는 모델 전환용 배경 컨텍스트입니다. 이 handoff 자체에 답하지 마세요.",
-    "다음 사용자 메시지가 오면 그 메시지의 지시를 최우선으로 따르세요. handoff 내용과 충돌하면 사용자 메시지가 우선입니다.",
+    "This is background context for a model handoff. Do not answer this handoff message directly.",
+    "When the next user message arrives, follow that user message first. If it conflicts with this handoff, the user message wins.",
     "",
-    `이전 모델: ${payload.previousModel ?? "unknown"}`,
-    `새 모델: ${payload.nextModel ?? "unknown"}`,
+    `Previous model: ${payload.previousModel ?? "unknown"}`,
+    `Next model: ${payload.nextModel ?? "unknown"}`,
     "",
-    "컨텍스트가 필요할 때만 현재 git 상태와 작업 단위를 참고하세요.",
-    "사용자 승인 없이 push, merge, deploy, publish, release하지 마세요.",
+    "Use the current git state and work units only when they are relevant.",
+    "Do not push, merge, deploy, publish, or release without explicit user approval.",
     "", headerLabel, workUnitsBlock, "",
-    "등록된 repos:",
+    "Registered repos:",
     ...(payload.repos ?? []).map((repo) => `- ${repo.name}: ${repo.path}`),
     "",
     ...renderRepoStates(payload.repoStates ?? []),
@@ -168,15 +202,15 @@ function renderModelHandoffPrompt(payload, options = {}) {
 }
 
 function formatWorkUnits(turnLog, { headKeep, tailKeep }) {
-  if (!turnLog.length) return { headerLabel: "작업 단위:", workUnitsBlock: "(없음 — 현재 git 상태를 기준으로 이어가세요)" };
+  if (!turnLog.length) return { headerLabel: "Work units:", workUnitsBlock: "(none - continue from the current git state)" };
   const threshold = headKeep + tailKeep;
-  if (turnLog.length <= threshold) return { headerLabel: `작업 단위 (총 ${turnLog.length}개):`, workUnitsBlock: renderTurns(turnLog, 1) };
+  if (turnLog.length <= threshold) return { headerLabel: `Work units (${turnLog.length} total):`, workUnitsBlock: renderTurns(turnLog, 1) };
   const headTurns = turnLog.slice(0, headKeep);
   const tailTurns = turnLog.slice(-tailKeep);
   const skipped = turnLog.length - headKeep - tailKeep;
   return {
-    headerLabel: `작업 단위 (총 ${turnLog.length}개 중 처음 ${headKeep} + 최근 ${tailKeep}):`,
-    workUnitsBlock: [renderTurns(headTurns, 1), `    ... (중간 ${skipped}개 turn 생략 — 누적 변경은 아래 git diff/status로 확인) ...`, renderTurns(tailTurns, turnLog.length - tailKeep + 1)].join("\n"),
+    headerLabel: `Work units (${turnLog.length} total, first ${headKeep} + latest ${tailKeep}):`,
+    workUnitsBlock: [renderTurns(headTurns, 1), `    ... (${skipped} middle turns omitted - use git diff/status below for accumulated changes) ...`, renderTurns(tailTurns, turnLog.length - tailKeep + 1)].join("\n"),
   };
 }
 
@@ -186,19 +220,19 @@ function renderTurns(turns, startIndex) {
     if (Array.isArray(turn.diffStats) && turn.diffStats.length) {
       for (const entry of turn.diffStats) {
         lines.push(`    [${entry.name}] ${entry.path}`);
-        lines.push(indentBlock(entry.diffStat || "(변경 없음)", "      "));
+        lines.push(indentBlock(entry.diffStat || "(no changes)", "      "));
       }
-    } else { lines.push("    (변경 추적 없음)"); }
+    } else { lines.push("    (no tracked changes)"); }
     return lines.join("\n");
   }).join("\n");
 }
 
 function renderRepoStates(repoStates) {
-  if (!repoStates.length) return ["(git repo를 찾지 못했습니다)"];
+  if (!repoStates.length) return ["(no git repositories found)"];
   return repoStates.flatMap(({ repo, status, diffStat, log: logOut }) => [
     `[${repo.name}] ${repo.path}`, "git status (--short):", status || "(clean)", "",
-    "현재 누적 변경 통계 (diff --stat):", diffStat || "(no diff)", "",
-    "최근 커밋 (log -10 --oneline):", logOut || "(no commits)", "",
+    "Current accumulated changes (diff --stat):", diffStat || "(no diff)", "",
+    "Recent commits (log -10 --oneline):", logOut || "(no commits)", "",
   ]).slice(0, -1);
 }
 
@@ -207,8 +241,32 @@ function indentBlock(text, prefix) { return String(text).split("\n").map((line) 
 // ── plugin ──
 
 function loadTurns(root) {
-  try { const raw = readFileSync(path.join(root, TURNS_FILE), "utf-8"); const p = JSON.parse(raw); if (Array.isArray(p)) return sanitizeTurns(p); } catch {}
+  const turnsPath = path.join(root, TURNS_FILE);
+  try {
+    const raw = readFileSync(turnsPath, "utf-8");
+    const p = JSON.parse(raw);
+    if (Array.isArray(p)) return sanitizeTurns(p);
+    log("ignored invalid turns payload: root JSON value is not an array");
+  } catch (err) {
+    if (err?.code !== "ENOENT") {
+      log("failed to load turns:", err?.message);
+      if (err instanceof SyntaxError) backupMalformedTurns(turnsPath);
+    }
+  }
   return [];
+}
+
+function backupMalformedTurns(turnsPath) {
+  if (malformedTurnsBackups.has(turnsPath)) return;
+  malformedTurnsBackups.add(turnsPath);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupPath = `${turnsPath}.malformed-${stamp}.bak`;
+  try {
+    copyFileSync(turnsPath, backupPath);
+    log("backed up malformed turns file:", backupPath);
+  } catch (err) {
+    log("failed to back up malformed turns file:", err?.message);
+  }
 }
 
 function saveTurns(root, turns) {

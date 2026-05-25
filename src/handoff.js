@@ -10,19 +10,19 @@ export function renderModelHandoffPrompt(payload, options = {}) {
   return [
     "[Local-code model handoff]",
     "",
-    "이 메시지는 모델 전환용 배경 컨텍스트입니다. 이 handoff 자체에 답하지 마세요.",
-    "다음 사용자 메시지가 오면 그 메시지의 지시를 최우선으로 따르세요. handoff 내용과 충돌하면 사용자 메시지가 우선입니다.",
+    "This is background context for a model handoff. Do not answer this handoff message directly.",
+    "When the next user message arrives, follow that user message first. If it conflicts with this handoff, the user message wins.",
     "",
-    `이전 모델: ${payload.previousModel ?? "unknown"}`,
-    `새 모델: ${payload.nextModel ?? "unknown"}`,
+    `Previous model: ${payload.previousModel ?? "unknown"}`,
+    `Next model: ${payload.nextModel ?? "unknown"}`,
     "",
-    "컨텍스트가 필요할 때만 현재 git 상태와 작업 단위를 참고하세요.",
-    "사용자 승인 없이 push, merge, deploy, publish, release하지 마세요.",
+    "Use the current git state and work units only when they are relevant.",
+    "Do not push, merge, deploy, publish, or release without explicit user approval.",
     "",
     headerLabel,
     workUnitsBlock,
     "",
-    "등록된 repos:",
+    "Registered repos:",
     ...(payload.repos ?? []).map((repo) => `- ${repo.name}: ${repo.path}`),
     "",
     ...renderRepoStates(payload.repoStates ?? []),
@@ -30,20 +30,20 @@ export function renderModelHandoffPrompt(payload, options = {}) {
 }
 
 function formatWorkUnits(turnLog, { headKeep, tailKeep }) {
-  if (!turnLog.length) return { headerLabel: "작업 단위:", workUnitsBlock: "(없음 — 현재 git 상태를 기준으로 이어가세요)" };
+  if (!turnLog.length) return { headerLabel: "Work units:", workUnitsBlock: "(none - continue from the current git state)" };
   const threshold = headKeep + tailKeep;
   if (turnLog.length <= threshold) {
-    return { headerLabel: `작업 단위 (총 ${turnLog.length}개):`, workUnitsBlock: renderTurns(turnLog, 1) };
+    return { headerLabel: `Work units (${turnLog.length} total):`, workUnitsBlock: renderTurns(turnLog, 1) };
   }
   const headTurns = turnLog.slice(0, headKeep);
   const tailTurns = turnLog.slice(-tailKeep);
   const skipped = turnLog.length - headKeep - tailKeep;
   const tailStartIndex = turnLog.length - tailKeep + 1;
   return {
-    headerLabel: `작업 단위 (총 ${turnLog.length}개 중 처음 ${headKeep} + 최근 ${tailKeep}):`,
+    headerLabel: `Work units (${turnLog.length} total, first ${headKeep} + latest ${tailKeep}):`,
     workUnitsBlock: [
       renderTurns(headTurns, 1),
-      `    ... (중간 ${skipped}개 turn 생략 — 누적 변경은 아래 git diff/status로 확인) ...`,
+      `    ... (${skipped} middle turns omitted - use git diff/status below for accumulated changes) ...`,
       renderTurns(tailTurns, tailStartIndex),
     ].join("\n"),
   };
@@ -55,26 +55,26 @@ function renderTurns(turns, startIndex) {
     if (Array.isArray(turn.diffStats) && turn.diffStats.length) {
       for (const entry of turn.diffStats) {
         lines.push(`    [${entry.name}] ${entry.path}`);
-        lines.push(indentBlock(entry.diffStat || "(변경 없음)", "      "));
+        lines.push(indentBlock(entry.diffStat || "(no changes)", "      "));
       }
     } else {
-      lines.push("    (변경 추적 없음)");
+      lines.push("    (no tracked changes)");
     }
     return lines.join("\n");
   }).join("\n");
 }
 
 function renderRepoStates(repoStates) {
-  if (!repoStates.length) return ["(git repo를 찾지 못했습니다)"];
+  if (!repoStates.length) return ["(no git repositories found)"];
   return repoStates.flatMap(({ repo, status, diffStat, log }) => [
     `[${repo.name}] ${repo.path}`,
     "git status (--short):",
     status || "(clean)",
     "",
-    "현재 누적 변경 통계 (diff --stat):",
+    "Current accumulated changes (diff --stat):",
     diffStat || "(no diff)",
     "",
-    "최근 커밋 (log -10 --oneline):",
+    "Recent commits (log -10 --oneline):",
     log || "(no commits)",
     "",
   ]).slice(0, -1);

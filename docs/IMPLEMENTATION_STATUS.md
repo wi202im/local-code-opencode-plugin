@@ -1,78 +1,73 @@
 # Implementation Status
 
-이 문서는 `local-code-opencode-plugin`이 현재 어디까지 구현됐고, 최종적으로 어디까지 가야 하는지 정리한다.
+This document summarizes what `local-code-opencode-plugin` currently implements, what has been verified, and what remains before a stable release.
 
-## 한 줄 요약
+## Summary
 
-현재 저장소는 **OpenCode TUI 내부에서 native `/models` picker 전환 시 event hook으로 자동 git handoff context를 주입하고, 직접 `/model provider/model` 입력도 text-event fallback으로 handoff trigger 처리하는 native plugin**이 동작하는 상태다.
+The repository now contains a working native OpenCode plugin that injects git-based handoff context when the user switches models in the OpenCode TUI.
 
-대략적인 전체 구현율은 **90~92%** 수준으로 본다.
+The implementation is approximately **92-95% complete** for the current release target.
 
-## 최종 목표
+## Goal
 
-OpenCode TUI 안에서 모델을 바꿀 때, 대화 transcript가 아니라 **git working tree/status/diff/log**를 source of truth로 삼아 새 모델에게 이어받을 context를 주입한다.
+When a user switches models inside OpenCode, the next model should receive context based on **git working tree state, status, diff, and log**, rather than relying only on the chat transcript.
 
-목표 UX:
+Target flow:
 
 ```text
-OpenCode TUI에서 평소처럼 작업
-  ↓
-모델 전환 발생 (native /models picker)
-또는 직접 /model provider/model 입력
-  ↓
-plugin이 현재 repo/workspace 상태 수집
+User works normally in the OpenCode TUI
+  |
+Model switch occurs through the native /models picker
+or direct /model provider/model text is entered as a fallback trigger
+  |
+Plugin collects current repo/workspace state:
   - git status --short
   - git diff --stat
   - git log -10 --oneline
-  - 최근 작업 turn diff summary
-  ↓
-현재 session에 noReply context-only message 주입
-  ↓
-새 모델이 git 상태를 기준으로 자연스럽게 이어서 작업
+  - recent per-turn file changes
+  |
+Plugin injects a noReply context-only message into the current session
+  |
+The next model continues using git state as the primary handoff context
 ```
 
-최종형에서 지켜야 할 원칙:
+Release principles:
 
-- OpenCode TUI 기본 UX를 해치지 않는다.
-- transcript나 durable handoff file을 source of truth로 만들지 않는다.
-- git 상태를 최우선 source of truth로 삼는다.
-- 모델 전환 시점에만 개입한다.
-- 사용자 승인 없이 `push`, `merge`, `deploy`, `publish`, `release`하지 말라는 안전 문구를 handoff에 포함한다.
-- turnLog는 session-local/bounded cache로만 사용한다.
+- Preserve the default OpenCode TUI experience.
+- Do not make transcript or a durable handoff file the source of truth.
+- Treat git state as the durable source of truth.
+- Intervene only at model switch boundaries.
+- Include a safety reminder against unapproved `push`, `merge`, `deploy`, `publish`, and `release`.
+- Keep turn history as a bounded session-local cache.
 
-## 현재 구현된 것
+## Implemented
 
-### 1. Git context core
+### 1. Git Context Core
 
-구현율: **90~95%**
+Completion: **95%**
 
-구현 파일:
+Files:
 
 - `src/context.js`
 - `src/handoff.js`
 - `bin/lc-opencode-context.js`
 - `test/context.test.js`
 - `test/handoff.test.js`
-- `test/plugin.test.js`
-- `test/profiles.test.js`
 
-현재 가능한 것:
+Implemented behavior:
 
-- 현재 cwd가 단일 git repo인지 감지한다.
-- immediate child git repo가 2개 이상이면 multi-repo workspace로 감지한다.
-- 일반 하위 폴더를 repo로 오인하지 않도록 own `.git` entry 기준으로 child repo를 판정한다.
-- repo별 상태를 수집한다.
-  - `git status --short`
-  - `git diff --stat`
-  - `git log -10 --oneline`
-- turn 시작/종료 시점 git diff snapshot을 비교한다.
-- staged/unstaged tracked 변경과 untracked 파일을 turn 단위 diff stats로 렌더링할 수 있다.
-- local-code 스타일 handoff prompt를 생성한다.
-- 이전 모델/다음 모델 정보를 prompt에 넣는다.
-- 사용자 승인 없이 위험한 외부 작업을 하지 말라는 문구를 포함한다.
-- turnLog sliding window 렌더링 (처음 3 + 최근 7)
+- Detects whether the current working directory is a git repository.
+- Detects a multi-repo workspace when two or more immediate child directories have their own `.git` entry.
+- Detects a single child repository when the root is not itself a git repository.
+- Avoids treating ordinary child directories inside a repository as separate workspace repositories.
+- Collects per-repo status, diff stat, and recent commits.
+- Captures before/after git diff snapshots around a user turn.
+- Records staged, unstaged, and untracked file changes as per-turn diff stats.
+- Excludes plugin internal state under `.opencode/local-code/`.
+- Renders a local-code style model handoff prompt.
+- Renders a bounded turn-log window: first 3 turns plus latest 7 turns.
 
-CLI 예시:
+CLI example:
 
 ```bash
 node bin/lc-opencode-context.js \
@@ -81,144 +76,157 @@ node bin/lc-opencode-context.js \
   --next-model anthropic/claude-sonnet-4-5
 ```
 
-패키지 bin으로 설치되면:
+Installed binary example:
 
 ```bash
 lc-opencode-context --cwd . --next-model anthropic/claude-sonnet-4-5
 ```
 
-### 2. Native OpenCode plugin
+### 2. Native OpenCode Plugin
 
-구현율: **90~92%**
+Completion: **92-95%**
 
-구현 파일:
+Files:
 
 - `src/plugin.js` (npm package entry)
-- `.opencode/plugins/local-code-plugin.js` (local dev copy)
+- `.opencode/plugins/local-code-plugin.js` (local development copy used by real TUI smoke tests)
+- `test/plugin.test.js`
 
-현재 들어간 것:
+Implemented behavior:
 
-- OpenCode plugin export: `LocalCodeOpenCodePlugin` factory with `client`, `directory`, `project` params
-- Event hook 기반 session/model/agent 추적:
-  - `session.created` → sessionID 획득
-  - `session.next.model.switched` → native `/models` picker 전환 시 context 자동 주입
-  - 직접 `/model provider/model` 입력 → `message.part.updated`/`message.updated`로 감지해 context 주입
-  - injected handoff/direct command turnLog persistence 방지
-  - 직접 command 뒤 stale `session.updated`/assistant model event가 역방향 handoff를 만들지 않도록 guard
-  - `session.next.agent.switched` → agent 추적
-  - `message.part.updated` → user message text 캡처, request 매칭
-  - `message.updated` → user turn 생성, 시작 시점 git diff snapshot 캡처, turnLog 누적
-  - `session.idle` → 종료 시점 git diff snapshot 비교 후 turn 저장
-- `client.session.prompt({ noReply: true, parts: [...] })` 기반 context-only injection
-- TurnLog persistence: `.opencode/local-code/turns.json` 파일에 저장/로드 (최대 50개)
-- Sliding window 렌더링: 처음 3개 + 최근 7개 turn
-- Per-turn diff stats: user turn 시작/종료 시점의 git diff snapshot을 비교해 추출
-- OpenCode `info.summary.diffs`는 snapshot 비교 결과가 없을 때 보조 fallback으로 유지
-- 방어 로직: repo 미발견 또는 모든 repo clean 상태 시 injection 스킵
-- Workspace detection: root가 git repo 아닐 때 단일 child repo도 인식
+- Exports the `LocalCodeOpenCodePlugin` factory.
+- Tracks session, model, and agent state through OpenCode events:
+  - `session.created`
+  - `session.updated`
+  - `session.next.model.switched`
+  - `session.next.agent.switched`
+  - `message.part.updated`
+  - `message.updated`
+  - `session.idle`
+- Injects context with `client.session.prompt({ noReply: true, parts: [...] })`.
+- Automatically injects context on native `/models` picker switches.
+- Treats direct `/model provider/model` text input as a fallback handoff trigger.
+- Filters injected handoff messages and direct model commands out of turn-log persistence.
+- Guards against stale session or assistant model events that can arrive after the direct command fallback path.
+- Persists turn history to `.opencode/local-code/turns.json` with a maximum of 50 entries.
+- Backs up malformed `turns.json` files before starting with a fresh turn log.
+- Recovers a deferred model-switch prompt from OpenCode prompt history when text events are missed or interleaved.
+- Skips injection when no repositories are found or all repositories are clean.
 
-### 3. turnLog / 작업 단위 추적
+### 3. Turn Tracking
 
-구현율: **90~92%**
+Completion: **92-95%**
 
-현재 상태:
+Current behavior:
 
-- `message.updated` (role=user) → model/agent 캡처, turn 생성, before snapshot 캡처
-- `message.part.updated` → `part.messageID`로 user message text 매칭, `request` 필드 저장
-- `session.idle` → after snapshot 캡처, before/after 비교, turn 저장
-- staged/unstaged tracked 변경과 untracked 파일을 per-turn `diffStats`에 기록
-- `.opencode/local-code/turns.json` 같은 plugin 내부 상태 파일은 turn diff에서 제외
-- `info.summary.diffs` → snapshot 결과가 없을 때 보조 fallback으로 사용
-- TurnLog shape: `{ model, agent, request, diffStats, createdAt }`
-- Persistence: `.opencode/local-code/turns.json` (최대 50개)
-- Sliding window: 처음 3 + 최근 7개 (handoff.js)
+- `message.updated` with `role=user` creates a draft turn and captures a before snapshot.
+- `message.part.updated` attaches user text to the matching message id.
+- `session.idle` captures an after snapshot, compares before/after state, and finalizes the turn.
+- `info.summary.diffs` remains as a fallback when snapshot comparison has no result.
+- Empty no-op turns, injected handoff messages, and direct model commands are filtered out.
+- Stale concurrent plugin instances merge turn history instead of shrinking it.
 
-남은 것:
+Turn shape:
 
-- OpenCode가 직접 `/model provider/model`을 native command로 지원하지 않는 한, 직접 입력 경로는 실제 모델 전환이 아니라 handoff trigger fallback으로 동작함
+```js
+{
+  messageID,
+  model,
+  agent,
+  request,
+  diffStats,
+  createdAt
+}
+```
 
-## 아직 해야 할 항목
+## Verified Tests
 
-상세 spike 항목은 `docs/SPIKES.md`에 있다.
+Automated checks:
 
-우선순위 높은 항목:
+```bash
+npm test
+npm run check
+node --check .opencode/plugins/local-code-plugin.js
+node bin/lc-opencode-context.js
+env NPM_CONFIG_CACHE=/private/tmp/lc-npm-cache npm pack --dry-run
+```
 
-1. **실제 OpenCode 장시간 smoke test**
-   - 여러 turn 작업 후 `/models` picker 전환
-   - 직접 `/model provider/model` fallback 확인
-   - staged/untracked/multi-repo handoff 내용 확인
+Current expected result:
 
-2. **per-project config 지원**
-   - `.opencode/local-code.json`
-   - turnLog max/window/repo detection 옵션화
+```text
+npm test      # 39 tests passing
+npm run check # syntax check passing
+npm pack      # package contains runtime source, CLI, docs, license, and README
+```
 
-## 로컬 테스트 가이드
+Real OpenCode TUI smoke coverage:
 
-### 1. 저장소 받기
+- Fresh XDG data/config/cache/state directories.
+- Fresh temporary git workspace.
+- Malformed `.opencode/local-code/turns.json` recovery and backup.
+- First prompt captured under the initial model.
+- Native `/models` picker switch.
+- Prompt sent immediately after model switch.
+- Handoff injection confirmed in debug logs.
+- Injected handoff turn ignored.
+- Prompt-history fallback verified when text events are missed or interleaved.
+- Multiple model switches including A -> B -> A style flows verified in earlier smoke rounds.
+
+## Remaining Work
+
+Release blockers: **none known after the latest smoke pass**.
+
+Non-blocking follow-up candidates:
+
+1. Optional per-project config
+   - Example path: `.opencode/local-code.json`
+   - Possible options: turn-log max size, render window, repository detection behavior
+2. Upstream OpenCode native direct-model-command event
+   - If OpenCode exposes a true event for direct `/model provider/model` in the future, the fallback text-event path can be replaced or simplified.
+3. Broader packaging polish
+   - Add release notes/changelog when preparing the public registry entry.
+
+## Local Test Guide
+
+Clone and install:
 
 ```bash
 git clone https://github.com/wi202im/local-code-opencode-plugin.git
 cd local-code-opencode-plugin
+npm install
 ```
 
-### 2. 기본 검증
+Run checks:
 
 ```bash
 npm test
 npm run check
 ```
 
-현재 기준 기대 결과:
-
-```text
-npm test      # 23 tests passing
-npm run check # syntax check passing
-```
-
-### 3. CLI context 출력 확인
+Inspect CLI output:
 
 ```bash
 node bin/lc-opencode-context.js --cwd . --next-model opencode-go/deepseek-v4-pro
 ```
 
-출력에 다음이 포함되어야 한다.
+The output should include:
 
 - `[Local-code model handoff]`
-- 현재 repo 이름
+- Current repository name
 - `git status --short`
 - `git diff --stat`
 - `git log -10 --oneline`
-- 승인 없는 push/merge/deploy/publish/release 금지 문구
+- Safety language against unapproved push, merge, deploy, publish, or release
 
-### 4. 실제 OpenCode에서 플러그인 테스트
+Manual OpenCode test:
 
-```
-.prodebug/opencode.json 에 plugin 등록 후 OpenCode 실행:
+1. Register the plugin in OpenCode.
+2. Start OpenCode in a git repository.
+3. Make a small tracked or untracked file change.
+4. Switch models with the native `/models` picker.
+5. Confirm that the next model receives git handoff context.
+6. Enter `/model provider/model` as direct text and confirm that it triggers handoff context without persisting the command as a work turn.
 
-1. OpenCode TUI 안에서 평소처럼 작업
-2. /models picker로 모델 전환
-3. 새 모델이 git handoff context를 받아 자연스럽게 이어서 작업하는지 확인
-4. `/model opencode-go/deepseek-v4-pro`처럼 직접 입력했을 때 handoff trigger가 동작하고, command가 turnLog에 남지 않는지 확인
-```
+## Conclusion
 
-## 구현율 요약
-
-- Git context core: **90~95%**
-- CLI handoff generator: **85~90%**
-- Native OpenCode plugin: **90~92%**
-- turnLog: **90~92%**
-- 전체 최종 목표 기준: **90~92%**
-
-## 다음 개발 순서 제안
-
-1. 실제 OpenCode 장시간 smoke test로 TUI 동작 검증
-2. Plugin 이벤트 테스트를 injected handoff filtering, native `/models` picker 세부 payload까지 추가 확장
-3. OpenCode upstream에서 직접 모델 command 이벤트가 생길 경우 native integration으로 전환
-
-## 현재 결론
-
-지금 저장소는 **OpenCode TUI 안에서 event hook 기반으로 git handoff context를 자동 주입하는 native plugin**이 동작하는 상태다.
-
-Event payload shapes는 OpenCode 1.15.10 기준으로 검증되었고, `session.next.model.switched` 기반 context injection, 직접 `/model provider/model` text fallback, turnLog persistence/filtering, turn 시작/종료 git diff snapshot 비교가 구현되어 있다.
-
-남은 주요 작업은 실제 OpenCode 장시간 smoke test, 추가 이벤트 edge-case 테스트, OpenCode upstream에서 직접 모델 command 이벤트가 생길 경우의 native integration 검토다.
+The plugin is ready for release preparation. The main feature path is implemented, automated tests pass, real TUI smoke tests have covered the high-risk model-switch flows, and packaging has been narrowed to release-appropriate files.
