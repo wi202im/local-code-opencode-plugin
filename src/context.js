@@ -2,9 +2,12 @@ import { execFile } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { isInternalDiffPath } from "./internal-paths.js";
 
 const execFileAsync = promisify(execFile);
-const INTERNAL_DIFF_PATH_PREFIX = ".opencode/local-code/";
+const DEBUG = process.env.LOCAL_CODE_OPENCODE_DEBUG === "1";
+const log = (...args) => DEBUG && console.error("[lc-context]", ...args);
+const HASH_OBJECT_CHUNK_SIZE = 100;
 
 export async function buildContextPayload({ cwd = process.cwd(), previousModel = "unknown", nextModel = "unknown", logLimit = 10 } = {}) {
   const workspaceRoot = path.resolve(cwd);
@@ -97,11 +100,15 @@ async function collectRepoDiffSnapshot(repo) {
     git(repo.path, ["ls-files", "--others", "--exclude-standard"]),
   ]);
   const signatures = new Map();
+  const diffStats = new Map();
 
   for (const line of numstat.split("\n").filter(Boolean)) {
     const parts = line.split("\t");
     const file = parts.at(-1);
-    if (file && !isInternalDiffPath(file)) signatures.set(file, line);
+    if (file && !isInternalDiffPath(file)) {
+      signatures.set(file, line);
+      diffStats.set(file, formatNumstatLine(file, parts));
+    }
   }
 
   for (const line of nameStatus.split("\n").filter(Boolean)) {
@@ -110,22 +117,46 @@ async function collectRepoDiffSnapshot(repo) {
     if (file && !isInternalDiffPath(file)) signatures.set(file, `${signatures.get(file) ?? ""}|${line}`);
   }
 
-  for (const file of untracked.split("\n").filter(Boolean)) {
+  const untrackedFiles = untracked.split("\n").filter((file) => file && !isInternalDiffPath(file));
+  const untrackedHashes = await hashFiles(repo.path, untrackedFiles);
+  for (const file of untrackedFiles) {
     if (isInternalDiffPath(file)) continue;
-    const hash = await git(repo.path, ["hash-object", "--", file]);
+    const hash = untrackedHashes.get(file) ?? "";
     signatures.set(file, `untracked:${file}:${hash}`);
+    diffStats.set(file, "(untracked file)");
   }
 
   const files = {};
-  await Promise.all([...signatures].map(async ([file, signature]) => {
+  for (const [file, signature] of signatures) {
     files[file] = {
       signature,
-      diffStat: signature.startsWith("untracked:")
-        ? "(untracked file)"
-        : await git(repo.path, ["diff", "HEAD", "--stat", "--", file]),
+      diffStat: diffStats.get(file) ?? "(변경 있음)",
     };
-  }));
+  }
   return { repo, files };
+}
+
+function formatNumstatLine(file, parts) {
+  const [added, deleted] = parts;
+  if (!added || !deleted) return file;
+  if (added === "-" || deleted === "-") return `${file} | binary changed`;
+  const addedCount = Number(added);
+  const deletedCount = Number(deleted);
+  const total = addedCount + deletedCount;
+  const markers = `${"+".repeat(Math.min(addedCount, 20))}${"-".repeat(Math.min(deletedCount, 20))}`;
+  return `${file} | ${total} ${markers} (+${added} -${deleted})`;
+}
+
+async function hashFiles(cwd, files) {
+  if (!files.length) return new Map();
+  const entries = [];
+  for (let index = 0; index < files.length; index += HASH_OBJECT_CHUNK_SIZE) {
+    const chunk = files.slice(index, index + HASH_OBJECT_CHUNK_SIZE);
+    const output = await git(cwd, ["hash-object", "--", ...chunk]);
+    const hashes = output.split("\n").filter(Boolean);
+    entries.push(...chunk.map((file, chunkIndex) => [file, hashes[chunkIndex] ?? ""]));
+  }
+  return new Map(entries);
 }
 
 function formatSnapshotFile(repo, file, diffStat, multiRepo) {
@@ -135,10 +166,6 @@ function formatSnapshotFile(repo, file, diffStat, multiRepo) {
     path: renderedPath,
     diffStat: diffStat || "(변경 없음)",
   };
-}
-
-function isInternalDiffPath(file) {
-  return file === ".opencode/local-code" || file.startsWith(INTERNAL_DIFF_PATH_PREFIX);
 }
 
 async function hasDotGit(dir) {
@@ -153,15 +180,16 @@ async function hasDotGit(dir) {
 
 async function isGitRepo(dir) {
   if (await hasDotGit(dir)) return true;
-  const result = await git(dir, ["rev-parse", "--show-toplevel"]);
+  const result = await git(dir, ["rev-parse", "--show-toplevel"], { silent: true });
   return path.resolve(result.trim()) === path.resolve(dir);
 }
 
-async function git(cwd, args) {
+async function git(cwd, args, { silent = false } = {}) {
   try {
     const { stdout } = await execFileAsync("git", args, { cwd, maxBuffer: 1024 * 1024 });
     return stdout.trim();
-  } catch {
+  } catch (err) {
+    if (!silent) log("git failed:", args.join(" "), err?.message);
     return "";
   }
 }

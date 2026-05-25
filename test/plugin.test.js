@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { LocalCodeOpenCodePlugin } from "../src/plugin.js";
 import { initRepo, makeTempDir } from "../test-support/helpers.js";
@@ -347,6 +347,17 @@ test("plugin drops empty no-op pending turns", async () => {
 
   const turns = JSON.parse(await readFile(path.join(dir, ".opencode/local-code/turns.json"), "utf-8"));
   assert.equal(turns.length, 0);
+});
+
+test("plugin backs up malformed turns file before starting fresh", async () => {
+  const dir = await makePluginRepo("lc-opencode-malformed-turns-");
+  await mkdir(path.join(dir, ".opencode/local-code"), { recursive: true });
+  await writeFile(path.join(dir, ".opencode/local-code/turns.json"), "{not json");
+
+  await LocalCodeOpenCodePlugin({ directory: dir, client: makeClient() });
+
+  const files = await readdir(path.join(dir, ".opencode/local-code"));
+  assert.equal(files.some((file) => file.startsWith("turns.json.malformed-") && file.endsWith(".bak")), true);
 });
 
 test("plugin does not persist empty injected handoff placeholders", async () => {

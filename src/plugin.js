@@ -1,26 +1,47 @@
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { copyFile, readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { buildContextPayload, collectDiffSnapshot, diffStatsBetweenSnapshots } from "./context.js";
 import { renderModelHandoffPrompt } from "./handoff.js";
+import { isInternalDiffPath } from "./internal-paths.js";
 import { splitModelID } from "./profiles.js";
 
 const TURNS_FILE = ".opencode/local-code/turns.json";
 const TURN_LOG_MAX = 50;
 const HANDOFF_PREFIX = "[Local-code model handoff]";
-const INTERNAL_DIFF_PATH_PREFIX = ".opencode/local-code/";
 const DIRECT_MODEL_RE = /^\/model\s+([^\s/]+\/[^\s]+)\s*$/;
 const saveQueues = new Map();
+const malformedTurnsBackups = new Set();
 
 const DEBUG = process.env.LOCAL_CODE_OPENCODE_DEBUG === "1";
 const log = (...args) => DEBUG && console.error("[lc-plugin]", ...args);
 
 async function loadTurns(root) {
+  const turnsPath = path.join(root, TURNS_FILE);
   try {
-    const raw = await readFile(path.join(root, TURNS_FILE), "utf-8");
+    const raw = await readFile(turnsPath, "utf-8");
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) return sanitizeTurns(parsed);
-  } catch {}
+    log("ignored invalid turns payload: root JSON value is not an array");
+  } catch (err) {
+    if (err?.code !== "ENOENT") {
+      log("failed to load turns:", err?.message);
+      if (err instanceof SyntaxError) await backupMalformedTurns(turnsPath);
+    }
+  }
   return [];
+}
+
+async function backupMalformedTurns(turnsPath) {
+  if (malformedTurnsBackups.has(turnsPath)) return;
+  malformedTurnsBackups.add(turnsPath);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupPath = `${turnsPath}.malformed-${stamp}.bak`;
+  try {
+    await copyFile(turnsPath, backupPath);
+    log("backed up malformed turns file:", backupPath);
+  } catch (err) {
+    log("failed to back up malformed turns file:", err?.message);
+  }
 }
 
 async function saveTurns(root, turns) {
@@ -142,10 +163,6 @@ async function latestPromptHistoryInputSince(cursor) {
     try { return JSON.parse(line)?.input; } catch { return undefined; }
   }).filter((input) => typeof input === "string" && input.trim());
   return { input: inputs.at(-1), cursor: nextCursor };
-}
-
-function isInternalDiffPath(file) {
-  return typeof file === "string" && (file === ".opencode/local-code" || file.startsWith(INTERNAL_DIFF_PATH_PREFIX));
 }
 
 export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) => {
