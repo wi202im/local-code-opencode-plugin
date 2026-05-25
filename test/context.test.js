@@ -17,6 +17,20 @@ test("detects a single git repo and collects repo state", async () => {
   assert.match(payload.repoStates[0].diffStat, /README.md/);
 });
 
+test("repo state ignores local-code internal state files", async () => {
+  const dir = await makeTempDir("lc-opencode-internal-state-");
+  await initRepo(dir);
+  await writeFile(path.join(dir, "README.md"), "hello\nworld\n");
+  await mkdir(path.join(dir, ".opencode/local-code"), { recursive: true });
+  await writeFile(path.join(dir, ".opencode/local-code/turns.json"), "[]\n");
+
+  const payload = await buildContextPayload({ cwd: dir, previousModel: "old/model", nextModel: "new/model" });
+  assert.match(payload.repoStates[0].status, /README.md/);
+  assert.doesNotMatch(payload.repoStates[0].status, /\.opencode\/local-code/);
+  assert.match(payload.repoStates[0].diffStat, /README.md/);
+  assert.doesNotMatch(payload.repoStates[0].diffStat, /\.opencode\/local-code/);
+});
+
 test("workspace mode prefers two immediate child git repos", async () => {
   const root = await makeTempDir("lc-opencode-workspace-");
   await initWorkspace(root, ["api", "web"]);

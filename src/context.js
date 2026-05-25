@@ -83,8 +83,8 @@ export async function detectWorkspaceRepos(root) {
 
 export async function collectRepoState(repo, { logLimit = 10 } = {}) {
   const [status, diffStat, log] = await Promise.all([
-    git(repo.path, ["status", "--short"]),
-    git(repo.path, ["diff", "--stat"]),
+    git(repo.path, ["status", "--short", "--", ".", ":(exclude).opencode/local-code/**"]),
+    git(repo.path, ["diff", "--stat", "--", ".", ":(exclude).opencode/local-code/**"]),
     git(repo.path, ["log", `-${logLimit}`, "--oneline"]),
   ]);
   return { repo, status, diffStat, log };

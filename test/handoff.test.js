@@ -107,3 +107,11 @@ test("handoff includes safety clause", () => {
   const rendered = renderModelHandoffPrompt(makePayload());
   assert.match(rendered, /push.*merge.*deploy.*publish.*release/);
 });
+
+test("handoff tells the next model that the user prompt has priority", () => {
+  const rendered = renderModelHandoffPrompt(makePayload());
+  assert.match(rendered, /배경 컨텍스트/);
+  assert.match(rendered, /handoff 자체에 답하지 마세요/);
+  assert.match(rendered, /다음 사용자 메시지.*최우선/);
+  assert.match(rendered, /사용자 메시지가 우선/);
+});

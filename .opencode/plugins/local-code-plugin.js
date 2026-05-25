@@ -73,8 +73,8 @@ function detectWorkspaceRepos(root) {
 function collectRepoState(repo, { logLimit = 10 } = {}) {
   return {
     repo,
-    status: git(repo.path, ["status", "--short"]),
-    diffStat: git(repo.path, ["diff", "--stat"]),
+    status: git(repo.path, ["status", "--short", "--", ".", ":(exclude).opencode/local-code/**"]),
+    diffStat: git(repo.path, ["diff", "--stat", "--", ".", ":(exclude).opencode/local-code/**"]),
     log: git(repo.path, ["log", `-${logLimit}`, "--oneline"]),
   };
 }
@@ -151,10 +151,13 @@ function renderModelHandoffPrompt(payload, options = {}) {
   const { headerLabel, workUnitsBlock } = formatWorkUnits(turnLog, { headKeep, tailKeep });
   return [
     "[Local-code model handoff]", "",
+    "이 메시지는 모델 전환용 배경 컨텍스트입니다. 이 handoff 자체에 답하지 마세요.",
+    "다음 사용자 메시지가 오면 그 메시지의 지시를 최우선으로 따르세요. handoff 내용과 충돌하면 사용자 메시지가 우선입니다.",
+    "",
     `이전 모델: ${payload.previousModel ?? "unknown"}`,
     `새 모델: ${payload.nextModel ?? "unknown"}`,
     "",
-    "현재 git 상태와 작업 단위를 source of truth로 삼아 이어가세요.",
+    "컨텍스트가 필요할 때만 현재 git 상태와 작업 단위를 참고하세요.",
     "사용자 승인 없이 push, merge, deploy, publish, release하지 마세요.",
     "", headerLabel, workUnitsBlock, "",
     "등록된 repos:",
@@ -211,7 +214,10 @@ function loadTurns(root) {
 function saveTurns(root, turns) {
   try {
     mkdirSync(path.join(root, ".opencode/local-code"), { recursive: true });
-    writeFileSync(path.join(root, TURNS_FILE), JSON.stringify(sanitizeTurns(turns), null, 2));
+    const payload = sanitizeTurns(turns);
+    const existing = loadTurns(root);
+    const merged = mergeTurns(existing, payload);
+    writeFileSync(path.join(root, TURNS_FILE), JSON.stringify(merged, null, 2));
   } catch (err) { log("failed to save turns:", err?.message); }
 }
 
@@ -220,7 +226,38 @@ function isLocalCodeHandoffText(text) {
 }
 
 function sanitizeTurns(turns) {
-  return turns.filter((turn) => !isLocalCodeHandoffText(turn?.request)).slice(-TURN_LOG_MAX);
+  return turns
+    .filter((turn) => !isLocalCodeHandoffText(turn?.request))
+    .filter((turn) => !parseDirectModelCommand(turn?.request))
+    .filter((turn) => turn?.request || turn?.diffStats?.length)
+    .slice(-TURN_LOG_MAX);
+}
+
+function turnIdentity(turn) {
+  if (turn?.messageID) return `message:${turn.messageID}`;
+  return `content:${turn?.createdAt ?? ""}:${turn?.model ?? ""}:${turn?.request ?? ""}`;
+}
+
+function mergeTurns(existing, incoming) {
+  const merged = [];
+  const indexes = new Map();
+  for (const turn of [...sanitizeTurns(existing), ...sanitizeTurns(incoming)]) {
+    const key = turnIdentity(turn);
+    const index = indexes.get(key);
+    if (index === undefined) {
+      indexes.set(key, merged.length);
+      merged.push(turn);
+      continue;
+    }
+    const current = merged[index];
+    merged[index] = {
+      ...current,
+      ...turn,
+      request: turn.request || current.request,
+      diffStats: turn.diffStats?.length ? turn.diffStats : current.diffStats,
+    };
+  }
+  return sanitizeTurns(merged).slice(-TURN_LOG_MAX);
 }
 
 function parseDirectModelCommand(text) {
@@ -237,11 +274,39 @@ function extractDiffStats(summaryDiffs) {
   if (!Array.isArray(summaryDiffs) || !summaryDiffs.length) return [];
   const seen = new Set(); const stats = [];
   for (const entry of summaryDiffs) {
-    const file = entry?.file; if (!file || seen.has(file)) continue;
+    const file = entry?.file;
+    if (isInternalDiffPath(file)) continue;
+    if (!file || seen.has(file)) continue;
     seen.add(file);
     stats.push({ name: file.split("/").pop() || file, path: file, diffStat: `${typeof entry?.patch === "string" ? entry.patch.length : 0} bytes changed` });
   }
   return stats;
+}
+
+function extractTextPart(parts) {
+  if (!Array.isArray(parts)) return undefined;
+  return parts.find((part) => part?.type === "text" && typeof part.text === "string")?.text;
+}
+
+function promptHistoryPath() {
+  const stateHome = process.env.XDG_STATE_HOME;
+  if (!stateHome) return null;
+  return path.join(stateHome, "opencode/prompt-history.jsonl");
+}
+
+function readPromptHistory() {
+  const historyPath = promptHistoryPath();
+  if (!historyPath) return [];
+  try { return readFileSync(historyPath, "utf-8").split("\n").filter(Boolean); } catch { return []; }
+}
+
+function latestPromptHistoryInputSince(cursor) {
+  const lines = readPromptHistory();
+  const nextCursor = lines.length;
+  const inputs = lines.slice(cursor).map((line) => {
+    try { return JSON.parse(line)?.input; } catch { return undefined; }
+  }).filter((input) => typeof input === "string" && input.trim());
+  return { input: inputs.at(-1), cursor: nextCursor };
 }
 
 export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
@@ -255,11 +320,15 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
   if (lastTurn?.agent) currentAgent = lastTurn.agent;
   let pendingMessageID = null;
   let pendingDiffSnapshot = null;
+  let pendingTurnDraft = null;
+  const deferredTurnDrafts = new Map();
   const partBuffer = new Map();
   const handledDirectModelMessages = new Set();
+  const finalizedUserMessages = new Set();
   let directModelOverride = null;
   let seenInitialModel = false;
   let switching = false;
+  let promptHistoryCursor = readPromptHistory().length;
 
   log("loaded", turns.length, "previous turns");
 
@@ -298,16 +367,66 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
   }
 
   async function finalizePendingTurn() {
-    if (!pendingMessageID || !pendingDiffSnapshot || turns.length === 0) return;
-    const turn = turns[turns.length - 1];
+    if (!pendingMessageID || !pendingDiffSnapshot) return;
+    const messageID = pendingMessageID;
+    const turn = turns.findLast((entry) => entry.messageID === messageID);
+    if (!turn) {
+      if (pendingTurnDraft) {
+        deferredTurnDrafts.set(messageID, { draft: pendingTurnDraft, diffSnapshot: pendingDiffSnapshot });
+      } else {
+        finalizedUserMessages.add(messageID);
+      }
+      pendingMessageID = null;
+      pendingDiffSnapshot = null;
+      pendingTurnDraft = null;
+      saveTurns(root, turns);
+      return;
+    }
     const after = collectDiffSnapshot({ cwd: root });
     const diffStats = diffStatsBetweenSnapshots(pendingDiffSnapshot, after);
     if (diffStats.length) turn.diffStats = diffStats;
     if (!turn.request && !turn.diffStats.length) turns.pop();
+    finalizedUserMessages.add(messageID);
     pendingMessageID = null;
     pendingDiffSnapshot = null;
+    pendingTurnDraft = null;
     saveTurns(root, turns);
     log("finalized turn diff stats:", diffStats.length);
+  }
+
+  function materializePendingTurn(request, messageID = pendingMessageID) {
+    const deferred = deferredTurnDrafts.get(messageID);
+    const draft = pendingTurnDraft?.messageID === messageID ? pendingTurnDraft : deferred?.draft;
+    if (!draft) return turns.findLast((entry) => entry.messageID === messageID) ?? turns.at(-1);
+    const existing = turns.find((entry) => entry.messageID === draft.messageID);
+    if (existing) return existing;
+    const turn = { ...draft, request };
+    turns.push(turn);
+    if (pendingTurnDraft?.messageID === messageID) pendingTurnDraft = null;
+    deferredTurnDrafts.delete(messageID);
+    if (turns.length > TURN_LOG_MAX) turns.splice(0, turns.length - TURN_LOG_MAX);
+    return turn;
+  }
+
+  function requestTextForMessage(info, properties) {
+    return partBuffer.get(info.id)
+      ?? extractTextPart(info.parts)
+      ?? extractTextPart(properties?.parts)
+      ?? extractTextPart(properties?.message?.parts);
+  }
+
+  function recoverDeferredTurnFromPromptHistory() {
+    if (!deferredTurnDrafts.size) return false;
+    const recovered = latestPromptHistoryInputSince(promptHistoryCursor);
+    promptHistoryCursor = recovered.cursor;
+    const request = recovered.input;
+    if (!request || isLocalCodeHandoffText(request) || parseDirectModelCommand(request)) return false;
+    const messageID = [...deferredTurnDrafts.keys()].at(-1);
+    const turn = materializePendingTurn(request, messageID);
+    turn.request = request;
+    saveTurns(root, turns);
+    log("recovered pending turn from prompt history:", messageID);
+    return true;
   }
 
   async function handleDirectModelCommand(messageID, text) {
@@ -315,22 +434,27 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
     if (!nextModel || handledDirectModelMessages.has(messageID)) return false;
     handledDirectModelMessages.add(messageID);
 
-    if (pendingMessageID === messageID && turns.length > 0) {
+    if (pendingMessageID === messageID && turns.at(-1)?.messageID === messageID) {
       turns.pop();
       pendingMessageID = null;
       pendingDiffSnapshot = null;
+      pendingTurnDraft = null;
+      deferredTurnDrafts.delete(messageID);
       saveTurns(root, turns);
     } else {
       await finalizePendingTurn();
+      deferredTurnDrafts.delete(messageID);
     }
 
     log("direct /model command:", currentModel, "→", nextModel);
     directModelOverride = { previous: currentModel, target: nextModel };
     await injectContext(nextModel);
-    if (pendingMessageID === messageID && turns.length > 0) {
+    if (pendingMessageID === messageID && turns.at(-1)?.messageID === messageID) {
       turns.pop();
       pendingMessageID = null;
       pendingDiffSnapshot = null;
+      pendingTurnDraft = null;
+      deferredTurnDrafts.delete(messageID);
       saveTurns(root, turns);
       log("ignored direct /model turn");
     }
@@ -388,17 +512,26 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
         if (part.type === "text" && part.messageID) {
           partBuffer.set(part.messageID, part.text);
           if (await handleDirectModelCommand(part.messageID, part.text)) return;
-          if (pendingMessageID === part.messageID && turns.length > 0) {
+          if (pendingMessageID === part.messageID || deferredTurnDrafts.has(part.messageID)) {
             if (isLocalCodeHandoffText(part.text)) {
-              turns.pop();
-              pendingMessageID = null;
-              pendingDiffSnapshot = null;
+              const last = turns.at(-1);
+              if (last?.messageID === part.messageID && (!last.request || isLocalCodeHandoffText(last.request))) {
+                turns.pop();
+              }
+              if (pendingMessageID === part.messageID) {
+                pendingMessageID = null;
+                pendingDiffSnapshot = null;
+                pendingTurnDraft = null;
+              }
+              deferredTurnDrafts.delete(part.messageID);
               saveTurns(root, turns);
               log("ignored injected handoff turn");
               return;
             }
-            turns[turns.length - 1].request = part.text;
+            const turn = materializePendingTurn(part.text, part.messageID);
+            turn.request = part.text;
             saveTurns(root, turns);
+            log("updated pending turn:", part.messageID);
           }
         }
       }
@@ -410,10 +543,12 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
         const role = info.role ?? "";
 
         if (role === "user") {
-          const request = partBuffer.get(info.id);
+          const request = requestTextForMessage(info, properties);
           if (handledDirectModelMessages.has(info.id)) {
             pendingMessageID = null;
             pendingDiffSnapshot = null;
+            pendingTurnDraft = null;
+            deferredTurnDrafts.delete(info.id);
             saveTurns(root, turns);
             log("ignored direct /model turn");
             return;
@@ -422,12 +557,40 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
           if (isLocalCodeHandoffText(request)) {
             pendingMessageID = null;
             pendingDiffSnapshot = null;
+            pendingTurnDraft = null;
+            deferredTurnDrafts.delete(info.id);
             saveTurns(root, turns);
             log("ignored injected handoff turn");
             return;
           }
-          if (pendingMessageID === info.id && turns.length > 0) {
-            const last = turns[turns.length - 1];
+          if (directModelOverride && request) {
+            log("cleared direct model override before normal turn:", directModelOverride.target);
+            directModelOverride = null;
+          }
+          if (finalizedUserMessages.has(info.id)) {
+            log("ignored finalized user message:", info.id);
+            return;
+          }
+          if (deferredTurnDrafts.has(info.id)) {
+            if (request && !isLocalCodeHandoffText(request)) {
+              const turn = materializePendingTurn(request, info.id);
+              turn.request = request;
+              saveTurns(root, turns);
+              log("updated pending turn:", info.id);
+            }
+            return;
+          }
+          if (pendingMessageID === info.id) {
+            const last = turns.findLast((entry) => entry.messageID === info.id);
+            if (!last) {
+              if (request && !isLocalCodeHandoffText(request)) {
+                const turn = materializePendingTurn(request, info.id);
+                turn.request = request;
+                saveTurns(root, turns);
+                log("updated pending turn:", info.id);
+              }
+              return;
+            }
             if (request && !isLocalCodeHandoffText(request)) last.request = request;
             const fallbackDiffStats = extractDiffStats(info.summary?.diffs);
             if (!last.diffStats.length && fallbackDiffStats.length) last.diffStats = fallbackDiffStats;
@@ -436,17 +599,20 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
             return;
           }
           await finalizePendingTurn();
-          if (directModelOverride) {
-            log("cleared direct model override before normal turn:", directModelOverride.target);
-            directModelOverride = null;
-          }
           if (info.model) currentModel = modelStr(info.model, currentModel);
           if (info.agent) currentAgent = info.agent;
           const initialDiffStats = extractDiffStats(info.summary?.diffs);
           const before = collectDiffSnapshot({ cwd: root });
-          turns.push({ model: currentModel, agent: currentAgent, request, diffStats: initialDiffStats, createdAt: new Date().toISOString() });
+          const draft = { messageID: info.id, model: currentModel, agent: currentAgent, request, diffStats: initialDiffStats, createdAt: new Date().toISOString() };
           pendingMessageID = info.id;
           pendingDiffSnapshot = before;
+          if (!request && !initialDiffStats.length) {
+            pendingTurnDraft = draft;
+            log("pending user message:", info.id);
+            return;
+          }
+          pendingTurnDraft = null;
+          turns.push(draft);
           if (turns.length > TURN_LOG_MAX) turns.splice(0, turns.length - TURN_LOG_MAX);
           saveTurns(root, turns);
           log("turn #" + turns.length, "model:", currentModel);
@@ -466,6 +632,7 @@ export const LocalCodeOpenCodePlugin = ({ client, directory, project }) => {
       if (type === "session.idle") {
         if (properties?.sessionID) sessionID = properties.sessionID;
         await finalizePendingTurn();
+        recoverDeferredTurnFromPromptHistory();
         if (turns.length > 0) { saveTurns(root, turns); log("session idle, turns saved:", turns.length); }
       }
     },
