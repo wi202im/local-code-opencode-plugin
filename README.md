@@ -90,7 +90,7 @@ Alternatively, pin the version in your OpenCode config:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["local-code-opencode-plugin@1.0.1"]
+  "plugin": ["local-code-opencode-plugin@1.0.2"]
 }
 ```
 

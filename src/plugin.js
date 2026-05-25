@@ -500,4 +500,3 @@ export const LocalCodeOpenCodePlugin = async ({ client, directory, project }) =>
 };
 
 export default LocalCodeOpenCodePlugin;
-export { splitModelID };

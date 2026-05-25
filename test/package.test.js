@@ -10,3 +10,10 @@ test("package exposes server plugin entrypoints for OpenCode npm loading", async
   assert.equal(pkg.exports["."], "./src/plugin.js");
   assert.equal(pkg.exports["./server"], "./src/plugin.js");
 });
+
+test("plugin entrypoint only exposes plugin factories as named exports", async () => {
+  const mod = await import("../src/plugin.js");
+  const named = Object.keys(mod).filter((key) => key !== "default").sort();
+
+  assert.deepEqual(named, ["LocalCodeOpenCodePlugin"]);
+});
